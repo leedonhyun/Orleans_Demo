@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Interflare.Orleans.Marten.Clustering" Version="0.0.7" />
+    <PackageReference Include="Interflare.Orleans.Marten.Persistence" Version="0.0.7" />
+    <PackageReference Include="Interflare.Orleans.Marten.Reminders" Version="0.0.7" />
+    <PackageReference Include="Marten" Version="8.32.0" />
+    <PackageReference Include="Marten.AspNetCore" Version="8.32.0" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Orleans.Clustering.Redis" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.CodeGenerator" Version="10.1.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Orleans.Core" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Core.Abstractions" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Reminders" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Reminders.Redis" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Sdk" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Serialization.Abstractions" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Streaming" Version="10.1.0" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GrainImplement\GrainImplement.csproj" />
+    <ProjectReference Include="..\GrainInterfaces\GrainInterfaces.csproj" />
+  </ItemGroup>
+
+</Project>

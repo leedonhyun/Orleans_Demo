@@ -1,0 +1,27 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+# User-specific files
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE folders
+.vs/
+.vscode/
+
+# Test and coverage output
+TestResults/
+coverage/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+
+# Local temporary build artifacts in this repo
+_tempbuild/
