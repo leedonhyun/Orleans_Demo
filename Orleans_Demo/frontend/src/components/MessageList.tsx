@@ -3,6 +3,7 @@ import type { ChatMessage } from "../types";
 
 type MessageListProps = {
   messages: ChatMessage[];
+  participantCount: number;
   localUserId: string;
   readReceipts: Record<string, number>;
   quickEmojis: string[];
@@ -12,25 +13,38 @@ type MessageListProps = {
 };
 
 export default function MessageList(props: MessageListProps) {
-  const readUsersForMessage = (message: ChatMessage) => {
-    const readers: string[] = [];
+  const readCountForMessage = (message: ChatMessage) => {
+    let count = 0;
     for (const [reader, seq] of Object.entries(props.readReceipts)) {
-      if (reader === props.localUserId) {
+      if (reader === message.userId) {
         continue;
       }
       if (Number(seq || 0) >= Number(message.sequence || 0)) {
-        readers.push(reader);
+        count += 1;
       }
     }
-    return readers;
+    return count;
+  };
+
+  const unreadRemainingForMessage = (message: ChatMessage) => {
+    const others = Math.max(0, props.participantCount - 1);
+    if (others === 0) {
+      return 0;
+    }
+
+    if (Number(message.sequence || 0) <= 0) {
+      return others;
+    }
+
+    const readCount = Math.min(others, readCountForMessage(message));
+    return Math.max(0, others - readCount);
   };
 
   return (
     <section className="chat" ref={props.chatBoxRef}>
       {props.messages.map((m) => {
         const key = m.sequence > 0 ? "s:" + m.sequence : "c:" + (m.clientMessageId || m.sentAt);
-        const isMine = m.userId === props.localUserId;
-        const readers = isMine ? readUsersForMessage(m) : [];
+        const unreadRemaining = unreadRemainingForMessage(m);
 
         const renderedReactions = m.reactions.slice();
         for (const emoji of props.quickEmojis) {
@@ -43,8 +57,8 @@ export default function MessageList(props: MessageListProps) {
           <div className="msg" key={key}>
             <div className="meta">
               <span>{new Date(m.sentAt).toLocaleTimeString()} | {m.userId}</span>
-              {isMine ? (
-                <span className={"read-state" + (readers.length ? " read" : "")}>{readers.length ? "Read by " + readers.slice(0, 2).join(", ") + (readers.length > 2 ? " +" + (readers.length - 2) : "") : "Sent"}</span>
+              {unreadRemaining > 0 ? (
+                <span className="read-state read">{"읽지않음 " + unreadRemaining}</span>
               ) : null}
             </div>
             <div>{m.message}</div>

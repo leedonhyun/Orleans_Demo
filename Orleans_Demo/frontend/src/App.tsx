@@ -177,6 +177,7 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [readReceipts, setReadReceipts] = useState<Record<string, number>>({});
+  const [participantCount, setParticipantCount] = useState(0);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [status, setStatus] = useState<Status>({ ok: false, text: "Disconnected" });
   const [isJoined, setIsJoined] = useState(false);
@@ -238,6 +239,7 @@ export default function App() {
     lastReadSentSequenceRef.current = 0;
     setMessages([]);
     setReadReceipts({});
+    setParticipantCount(0);
     setTypingUsers([]);
 
     for (const key of pendingAcksRef.current.keys()) {
@@ -301,10 +303,31 @@ export default function App() {
     forceScrollOnNextRenderRef.current = false;
 
     const last = messages[messages.length - 1];
-    if (last) {
+    if (last && document.visibilityState === "visible" && document.hasFocus()) {
       notifyRead(last.sequence).catch(console.error);
     }
   }, [messages, readReceipts, notifyRead]);
+
+  useEffect(() => {
+    const flushReadIfVisible = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+        return;
+      }
+
+      const last = messages[messages.length - 1];
+      if (last) {
+        notifyRead(last.sequence).catch(console.error);
+      }
+    };
+
+    document.addEventListener("visibilitychange", flushReadIfVisible);
+    window.addEventListener("focus", flushReadIfVisible);
+
+    return () => {
+      document.removeEventListener("visibilitychange", flushReadIfVisible);
+      window.removeEventListener("focus", flushReadIfVisible);
+    };
+  }, [messages, notifyRead]);
 
   useEffect(() => {
     const leaveOnUnload = () => {
@@ -390,6 +413,7 @@ export default function App() {
       hub.on("ParticipantChanged", (payload: unknown) => {
         const value = payload as Record<string, unknown>;
         const participants = Number(value.participants ?? value.Participants ?? 0);
+        setParticipantCount(participants);
         setStatus({ ok: true, text: "Connected | users: " + participants });
       });
 
@@ -490,6 +514,7 @@ export default function App() {
     });
 
     setReadReceipts(snapshot.readReceipts);
+    setParticipantCount(snapshot.participants);
     setStatus({ ok: true, text: "Connected | users: " + snapshot.participants });
   }, []);
 
@@ -779,6 +804,7 @@ export default function App() {
       />
       <MessageList
         messages={messages}
+        participantCount={participantCount}
         localUserId={localUserIdRef.current}
         readReceipts={readReceipts}
         quickEmojis={QUICK_EMOJIS}

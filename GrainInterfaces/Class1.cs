@@ -74,3 +74,20 @@ public interface IUserSessionGrain : IGrainWithStringKey
     Task DeactivateIfMatch(string connectionId);
 }
 
+[GenerateSerializer]
+public sealed class ConnectionSessionInfo
+{
+    [Id(0)]
+    public string UserId { get; set; } = string.Empty;
+
+    [Id(1)]
+    public string RoomId { get; set; } = string.Empty;
+}
+
+public interface IConnectionSessionGrain : IGrainWithStringKey
+{
+    Task Upsert(string userId, string roomId);
+    Task<ConnectionSessionInfo> GetCurrent();
+    Task Clear();
+}
+

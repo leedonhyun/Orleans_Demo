@@ -31,6 +31,13 @@ public class ChatHub : Hub
 
         var sessionGrain = _client.GetGrain<IUserSessionGrain>(normalizedUserId);
         var previous = await sessionGrain.Activate(Context.ConnectionId, normalizedRoomId);
+        var connectionSession = _client.GetGrain<IConnectionSessionGrain>(Context.ConnectionId);
+        await connectionSession.Upsert(normalizedUserId, normalizedRoomId);
+
+        // Keep room participant state aligned with active SignalR session.
+        // This closes a race where API join happens before hub join and stale-prune removed the user.
+        var player = _client.GetGrain<IPlayerGrain>(normalizedUserId);
+        await player.JoinRoom(normalizedRoomId);
 
         if (!string.IsNullOrWhiteSpace(previous.ConnectionId) && previous.ConnectionId != Context.ConnectionId)
         {
@@ -59,6 +66,49 @@ public class ChatHub : Hub
                 normalizedUserId,
                 Context.ConnectionId);
         }
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        var connectionSession = _client.GetGrain<IConnectionSessionGrain>(Context.ConnectionId);
+        var session = await connectionSession.GetCurrent();
+        var userId = session.UserId;
+
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            try
+            {
+                var sessionGrain = _client.GetGrain<IUserSessionGrain>(userId);
+                var current = await sessionGrain.GetCurrent();
+
+                // Only clear participant state when this exact connection is still the active session.
+                if (string.Equals(current.ConnectionId, Context.ConnectionId, StringComparison.Ordinal))
+                {
+                    if (!string.IsNullOrWhiteSpace(current.RoomId))
+                    {
+                        var player = _client.GetGrain<IPlayerGrain>(userId);
+                        await player.LeaveRoom();
+
+                        var room = _client.GetGrain<IRoomGrain>(current.RoomId);
+                        var participants = await room.GetParticipantCount();
+                        await Clients.Group(current.RoomId).SendAsync("ParticipantChanged", new { roomId = current.RoomId, participants });
+                    }
+
+                    await sessionGrain.DeactivateIfMatch(Context.ConnectionId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Disconnect cleanup failed. userId={UserId}, connectionId={ConnectionId}",
+                    userId,
+                    Context.ConnectionId);
+            }
+        }
+
+        await connectionSession.Clear();
+
+        await base.OnDisconnectedAsync(exception);
     }
 
     public Task LeaveRoom(string roomId)
