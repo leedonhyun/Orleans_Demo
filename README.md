@@ -95,3 +95,99 @@ dotnet build Orleans_Demo.slnx
 
 - 프론트는 빌드 후 `Orleans_Demo/wwwroot` 정적 파일로 서비스됩니다.
 - 백엔드/프론트 병행 수정 시, UI 반영을 위해 `npm run build`를 다시 실행하세요.
+
+---
+
+## English
+
+Orleans + SignalR real-time chat demo project.
+
+- Backend: ASP.NET Core (`net10.0`)
+- Actor model: Orleans
+- Storage/Cluster: Marten + PostgreSQL
+- Realtime: SignalR (optional Redis backplane)
+- Frontend: React + TypeScript + Vite
+
+## Project Structure
+
+- `Orleans_Demo/`: Web server + SignalR Hub + API
+- `GrainInterfaces/`: Orleans grain contracts
+- `GrainImplement/`: Orleans grain implementations
+- `Orleans_Demo/frontend/`: React/Vite frontend
+- `Orleans_Demo/wwwroot/`: Frontend build output (served as static files)
+
+## Prerequisites
+
+1. .NET SDK 10
+2. Node.js 18+
+3. PostgreSQL (Marten/Orleans storage)
+4. (Optional) Redis (if using SignalR backplane)
+
+## Configuration
+
+Main config files:
+
+- `Orleans_Demo/appsettings.json`
+- `Orleans_Demo/appsettings.Development.json`
+- `Orleans_Demo/appsettings.Silo1.json` (and `Silo2~5` if needed)
+
+Required settings to verify:
+
+- `ConnectionStrings:MyDatabase` (PostgreSQL connection string)
+- `SignalR:Redis:Enabled` and Redis connection string (optional)
+
+## Run
+
+### 1) Install frontend dependencies
+
+```powershell
+cd Orleans_Demo/frontend
+npm install
+```
+
+### 2) Build frontend (outputs to `wwwroot`)
+
+```powershell
+npm run build
+```
+
+### 3) Run backend
+
+From repository root:
+
+```powershell
+dotnet run --project Orleans_Demo/Orleans_Demo.csproj
+```
+
+Open in browser:
+
+- `http://127.0.0.1:5066`
+
+## Development Mode (separate frontend dev server)
+
+```powershell
+cd Orleans_Demo/frontend
+npm run dev
+```
+
+The Vite dev server proxies `/api` and `/hubs` to backend `http://127.0.0.1:5066`.
+
+## Build
+
+```powershell
+dotnet build Orleans_Demo.slnx
+```
+
+## Main APIs
+
+- `POST /api/chat/{roomId}/join`
+- `POST /api/chat/{roomId}/leave`
+- `POST /api/chat/{roomId}/leave-keepalive?userId=...`
+- `POST /api/chat/{roomId}/message`
+- `POST /api/chat/{roomId}/react`
+- `GET /api/chat/{roomId}/messages?take=100`
+
+## Notes
+
+- Frontend is served from static files in `Orleans_Demo/wwwroot` after build.
+- If you change frontend code, run `npm run build` again to reflect UI changes.
