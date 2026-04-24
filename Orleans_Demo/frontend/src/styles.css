@@ -1,0 +1,249 @@
+:root {
+  --bg-1: #0f1d2b;
+  --bg-2: #15344b;
+  --panel: rgba(10, 20, 33, 0.72);
+  --line: rgba(255, 255, 255, 0.14);
+  --txt: #e6f4ff;
+  --sub: #9ac2db;
+  --ok: #7ae582;
+  --warn: #ff8c69;
+  --chip: rgba(255, 255, 255, 0.08);
+  --chip-active: rgba(62, 208, 255, 0.26);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--txt);
+  background:
+    radial-gradient(circle at 10% 20%, rgba(62, 208, 255, 0.22), transparent 35%),
+    radial-gradient(circle at 90% 80%, rgba(255, 209, 102, 0.18), transparent 30%),
+    linear-gradient(145deg, var(--bg-1), var(--bg-2));
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.shell {
+  width: min(980px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  animation: fadeUp 440ms ease-out;
+}
+
+.top {
+  padding: 22px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 34px);
+  letter-spacing: 0.02em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--sub);
+  font-size: 14px;
+}
+
+.controls {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat {
+  height: 55vh;
+  padding: 16px 22px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 14px;
+}
+
+.msg {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.16);
+  display: grid;
+  gap: 8px;
+}
+
+.meta {
+  color: var(--sub);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.read-state {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.read-state.read {
+  color: var(--ok);
+}
+
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.reaction-chip {
+  width: auto;
+  border: 1px solid var(--line);
+  background: var(--chip);
+  color: var(--txt);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+button.reaction-chip.active {
+  background: var(--chip-active);
+}
+
+button.reaction-chip:hover {
+  transform: translateY(-1px);
+  filter: none;
+}
+
+.footer {
+  padding: 14px 22px 22px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.typing {
+  padding: 0 22px 8px;
+  color: var(--sub);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+input,
+button {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(6, 13, 22, 0.8);
+  color: var(--txt);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+input::placeholder {
+  color: #8ba8bb;
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(135deg, #1ca9d6, #3ed0ff);
+  color: #00202b;
+  font-weight: 700;
+  border: none;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 6px rgba(255, 140, 105, 0.15);
+}
+
+.dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 6px rgba(122, 229, 130, 0.15);
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 840px) {
+  .controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .footer {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .chat {
+    height: 52vh;
+  }
+}

@@ -25,3 +25,9 @@ coverage/
 
 # Local temporary build artifacts in this repo
 _tempbuild/
+
+# Frontend dependencies (Vite app)
+Orleans_Demo/frontend/node_modules/
+
+# Frontend build output
+Orleans_Demo/wwwroot/assets/
