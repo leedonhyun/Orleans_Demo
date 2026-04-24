@@ -7,6 +7,7 @@ type MessageListProps = {
   readReceipts: Record<string, number>;
   quickEmojis: string[];
   chatBoxRef: RefObject<HTMLElement>;
+  listEndRef: RefObject<HTMLDivElement>;
   onToggleReaction: (sequence: number, emoji: string) => void;
 };
 
@@ -66,6 +67,7 @@ export default function MessageList(props: MessageListProps) {
           </div>
         );
       })}
+      <div ref={props.listEndRef}></div>
     </section>
   );
 }

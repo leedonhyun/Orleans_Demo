@@ -36,7 +36,7 @@ public class ChatHub : Hub
         {
             if (!string.IsNullOrWhiteSpace(previous.RoomId))
             {
-                await TryRemoveFromGroup(previous.ConnectionId, previous.RoomId);
+                _ = TryRemoveFromGroup(previous.ConnectionId, previous.RoomId);
             }
 
             await Clients.Client(previous.ConnectionId).SendAsync("ForceLogout", new
@@ -48,7 +48,7 @@ public class ChatHub : Hub
         }
         else if (previous.ConnectionId == Context.ConnectionId && !string.IsNullOrWhiteSpace(previous.RoomId) && previous.RoomId != normalizedRoomId)
         {
-            await TryRemoveFromGroup(Context.ConnectionId, previous.RoomId);
+            _ = TryRemoveFromGroup(Context.ConnectionId, previous.RoomId);
         }
 
         if (!await TryAddToGroupWithRetry(Context.ConnectionId, normalizedRoomId))
@@ -161,7 +161,26 @@ public class ChatHub : Hub
     {
         try
         {
-            await Groups.RemoveFromGroupAsync(connectionId, roomId);
+            // Redis backplane can occasionally timeout for stale connections.
+            // Do not block JoinRoom on group-cleanup; give it a short budget.
+            var removeTask = Groups.RemoveFromGroupAsync(connectionId, roomId);
+            var completed = await Task.WhenAny(removeTask, Task.Delay(TimeSpan.FromMilliseconds(800)));
+            if (completed != removeTask)
+            {
+                _logger.LogWarning(
+                    "RemoveFromGroupAsync skipped after timeout budget. roomId={RoomId}, connectionId={ConnectionId}",
+                    roomId,
+                    connectionId);
+
+                _ = removeTask.ContinueWith(t =>
+                {
+                    var _ = t.Exception;
+                }, TaskContinuationOptions.OnlyOnFaulted);
+
+                return;
+            }
+
+            await removeTask;
         }
         catch (Exception ex) when (ex is TaskCanceledException || ex is TimeoutException)
         {

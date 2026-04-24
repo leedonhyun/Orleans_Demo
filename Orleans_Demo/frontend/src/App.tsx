@@ -8,6 +8,7 @@ import type { BusyState, ChatMessage, Reaction, Status } from "./types";
 
 const ACK_TIMEOUT_MS = 2000;
 const MAX_SEND_RETRY = 3;
+const JOIN_STEP_TIMEOUT_MS = 12000;
 const QUICK_EMOJIS = ["👍", "❤️", "😂"];
 
 type PendingAck = {
@@ -60,15 +61,15 @@ function normalizeRoomSnapshot(data: unknown): { participants: number; messages:
 }
 
 function compareMessages(a: ChatMessage, b: ChatMessage) {
-  const va = a.sequence > 0 ? a.sequence : Number.MAX_SAFE_INTEGER;
-  const vb = b.sequence > 0 ? b.sequence : Number.MAX_SAFE_INTEGER;
-  if (va !== vb) {
-    return va - vb;
-  }
-
   const ta = new Date(a.sentAt).getTime();
   const tb = new Date(b.sentAt).getTime();
-  return ta - tb;
+  if (ta !== tb) {
+    return ta - tb;
+  }
+
+  const va = a.sequence > 0 ? a.sequence : Number.MAX_SAFE_INTEGER;
+  const vb = b.sequence > 0 ? b.sequence : Number.MAX_SAFE_INTEGER;
+  return va - vb;
 }
 
 function upsertMessageList(list: ChatMessage[], message: ChatMessage): ChatMessage[] {
@@ -152,6 +153,24 @@ function generateClientMessageId() {
   return "msg-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(label + " timed out"));
+        }, ms);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export default function App() {
   const [roomId, setRoomId] = useState("lobby");
   const [userId, setUserId] = useState("player-1");
@@ -165,6 +184,7 @@ export default function App() {
   const [busy, setBusy] = useState<BusyState>({ join: false, send: false });
 
   const chatBoxRef = useRef<HTMLElement>(null);
+  const listEndRef = useRef<HTMLDivElement>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const typingDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingAcksRef = useRef(new Map<string, PendingAck>());
@@ -173,6 +193,7 @@ export default function App() {
   const lastReadSentSequenceRef = useRef(0);
   const suppressPollRefreshUntilRef = useRef(0);
   const isTypingRef = useRef(false);
+  const forceScrollOnNextRenderRef = useRef(false);
 
   const roomIdRef = useRef(roomId);
   const userIdRef = useRef(userId);
@@ -274,10 +295,10 @@ export default function App() {
       return;
     }
 
-    const nearBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 24;
-    if (nearBottom || messages.length <= 1) {
-      box.scrollTop = box.scrollHeight;
-    }
+    // Always keep newest message visible at the bottom.
+    listEndRef.current?.scrollIntoView({ block: "end" });
+    box.scrollTop = box.scrollHeight;
+    forceScrollOnNextRenderRef.current = false;
 
     const last = messages[messages.length - 1];
     if (last) {
@@ -464,13 +485,8 @@ export default function App() {
     const snapshot = normalizeRoomSnapshot(data);
 
     setMessages((prev) => {
-      const snapshotMaxSeq = getMaxSequence(snapshot.messages);
-      const localMaxSeq = getMaxSequence(prev);
-      if (!force && source === "poll" && snapshotMaxSeq < localMaxSeq) {
-        setStatus({ ok: true, text: "Connected | users: " + snapshot.participants });
-        return prev;
-      }
-      return snapshot.messages.slice().sort(compareMessages);
+      const snapshotSorted = snapshot.messages.slice().sort(compareMessages);
+      return snapshotSorted;
     });
 
     setReadReceipts(snapshot.readReceipts);
@@ -523,12 +539,16 @@ export default function App() {
       localUserIdRef.current = nextUserId;
       lastReadSentSequenceRef.current = 0;
 
-      await callApi("/api/chat/" + encodeURIComponent(nextRoomId) + "/join", "POST", { userId: nextUserId });
-      await ensureHubConnection();
+      await withTimeout(
+        callApi("/api/chat/" + encodeURIComponent(nextRoomId) + "/join", "POST", { userId: nextUserId }),
+        JOIN_STEP_TIMEOUT_MS,
+        "Join API"
+      );
+      await withTimeout(ensureHubConnection(), JOIN_STEP_TIMEOUT_MS, "SignalR connect");
 
       const hub = hubConnectionRef.current;
       if (!hub) {
-        return;
+        throw new Error("SignalR hub is not initialized");
       }
 
       if (connectedRoomIdRef.current && connectedRoomIdRef.current !== nextRoomId) {
@@ -538,9 +558,11 @@ export default function App() {
       await hub.invoke("JoinRoom", nextRoomId, nextUserId);
       setConnectedRoomId(nextRoomId);
       setIsJoined(true);
+      connectedRoomIdRef.current = nextRoomId;
+      isJoinedRef.current = true;
       setTypingUsers([]);
 
-      await refresh({ source: "join" });
+      await withTimeout(refresh({ source: "join" }), JOIN_STEP_TIMEOUT_MS, "Initial refresh");
 
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
@@ -609,14 +631,28 @@ export default function App() {
     const nextUserId = userId.trim();
     const nextMessage = message.trim();
 
-    if (!nextRoomId || !nextUserId || !nextMessage) {
+    if (!nextRoomId || !nextUserId) {
+      setStatus({ ok: false, text: "roomId/userId를 먼저 입력해 주세요." });
+      return;
+    }
+
+    if (!nextMessage) {
+      setStatus({ ok: false, text: "메시지를 입력해 주세요." });
       return;
     }
 
     if (!isJoinedRef.current || connectedRoomIdRef.current !== nextRoomId) {
-      setStatus({ ok: false, text: "Join 후 전송해 주세요." });
-      return;
+      // Join state can be briefly stale after refresh/reconnect.
+      // Do not block send: backend /message joins player to room and returns sequence.
+      setStatus({ ok: false, text: "Join 상태 재동기화 중입니다. 전송을 시도합니다..." });
     }
+
+    if (!localUserIdRef.current) {
+      localUserIdRef.current = nextUserId;
+    }
+
+    // Ensure the sender immediately sees the newly added message.
+    forceScrollOnNextRenderRef.current = true;
 
     const clientMessageId = generateClientMessageId();
     setBusy((prev) => ({ ...prev, send: true }));
@@ -667,9 +703,8 @@ export default function App() {
         suppressPollRefreshUntilRef.current = Date.now() + 1500;
       }
 
-      setTimeout(() => {
-        void refresh({ source: "reconcile", force: true });
-      }, 250);
+      // Immediately reconcile with server snapshot so the list reflects canonical order/state.
+      await refresh({ source: "reconcile", force: true });
     } catch (err) {
       console.error(err);
       setStatus({ ok: false, text: "Send failed: " + (err as Error).message });
@@ -748,6 +783,7 @@ export default function App() {
         readReceipts={readReceipts}
         quickEmojis={QUICK_EMOJIS}
         chatBoxRef={chatBoxRef}
+        listEndRef={listEndRef}
         onToggleReaction={(sequence, emoji) => {
           void toggleReaction(sequence, emoji).catch(console.error);
         }}
