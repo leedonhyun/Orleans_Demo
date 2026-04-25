@@ -31,3 +31,6 @@ Orleans_Demo/frontend/node_modules/
 
 # Frontend build output
 Orleans_Demo/wwwroot/assets/
+
+# Uploaded files
+Orleans_Demo/wwwroot/uploads/

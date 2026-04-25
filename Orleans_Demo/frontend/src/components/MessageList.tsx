@@ -69,6 +69,16 @@ export default function MessageList(props: MessageListProps) {
     return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp");
   };
 
+  const fileExtensionLabel = (fileName: string) => {
+    const idx = fileName.lastIndexOf(".");
+    if (idx < 0 || idx === fileName.length - 1) {
+      return "FILE";
+    }
+
+    const ext = fileName.slice(idx + 1).toUpperCase();
+    return ext.length > 5 ? ext.slice(0, 5) : ext;
+  };
+
   const downloadFile = (file: FilePayload) => {
     const link = document.createElement("a");
     link.href = file.url;
@@ -130,17 +140,25 @@ export default function MessageList(props: MessageListProps) {
             </div>
             {filePayload ? (
               <div className="file-message">
-                {isImagePayload(filePayload) ? (
-                  <img src={filePayload.url} alt={filePayload.name} className="file-preview" />
-                ) : null}
-                <button
-                  type="button"
-                  className="file-link-button"
-                  onClick={() => downloadFile(filePayload)}
-                >
-                  {filePayload.name}
-                </button>
-                <div className="file-meta">{filePayload.contentType}{formatFileSize(filePayload.size) ? " | " + formatFileSize(filePayload.size) : ""}</div>
+                <div className="file-row">
+                  <div className="file-thumb" aria-hidden="true">
+                    {isImagePayload(filePayload) ? (
+                      <img src={filePayload.url} alt="" className="file-thumb-image" />
+                    ) : (
+                      <span className="file-thumb-ext">{fileExtensionLabel(filePayload.name)}</span>
+                    )}
+                  </div>
+                  <div className="file-info">
+                    <button
+                      type="button"
+                      className="file-link-button"
+                      onClick={() => downloadFile(filePayload)}
+                    >
+                      {filePayload.name}
+                    </button>
+                    <div className="file-meta">{filePayload.contentType}{formatFileSize(filePayload.size) ? " | " + formatFileSize(filePayload.size) : ""}</div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div>{m.message}</div>
