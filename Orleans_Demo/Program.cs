@@ -133,6 +133,7 @@ app.MapHub<ChatHub>("/hubs/chat");
 var allowedUploadExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".mp4", ".webm", ".mov", ".avi", ".mkv",
     ".txt",
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"
 };

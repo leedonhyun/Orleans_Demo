@@ -72,6 +72,15 @@ export default function MessageList(props: MessageListProps) {
     return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp");
   };
 
+  const isVideoPayload = (file: FilePayload) => {
+    if (file.contentType.startsWith("video/")) {
+      return true;
+    }
+
+    const lower = file.name.toLowerCase();
+    return lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".avi") || lower.endsWith(".mkv");
+  };
+
   const isTextPayload = (file: FilePayload) => {
     if (file.contentType.startsWith("text/")) {
       return true;
@@ -136,6 +145,10 @@ export default function MessageList(props: MessageListProps) {
   const getBriefPreview = (file: FilePayload) => {
     if (isImagePayload(file)) {
       return "image";
+    }
+
+    if (isVideoPayload(file)) {
+      return "video";
     }
 
     if (isTextPayload(file)) {
@@ -215,6 +228,8 @@ export default function MessageList(props: MessageListProps) {
                   <div className="file-thumb" aria-hidden="true">
                     {isImagePayload(filePayload) ? (
                       <img src={filePayload.url} alt="" className="file-thumb-image" />
+                    ) : isVideoPayload(filePayload) ? (
+                      <video src={filePayload.url} className="file-thumb-video" muted playsInline preload="metadata" />
                     ) : (
                       <span className="file-thumb-text">{getBriefPreview(filePayload)}</span>
                     )}

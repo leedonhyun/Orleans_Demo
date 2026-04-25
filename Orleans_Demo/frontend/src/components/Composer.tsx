@@ -34,7 +34,7 @@ export default function Composer(props: ComposerProps) {
           className="file-input"
           title="Attach file"
           aria-label="Attach file"
-          accept="image/*,.txt,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+          accept="image/*,video/*,.txt,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
           onChange={(e) => {
             const selected = e.target.files?.[0];
             if (selected) {
