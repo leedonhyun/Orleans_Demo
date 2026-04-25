@@ -112,6 +112,56 @@ body {
   gap: 6px;
 }
 
+.file-input {
+  display: none;
+}
+
+.file-message {
+  display: grid;
+  gap: 6px;
+}
+
+.file-preview {
+  max-width: min(320px, 100%);
+  max-height: 220px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.file-link {
+  color: #9ddfff;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.file-link-button {
+  width: fit-content;
+  border: none;
+  background: transparent;
+  color: #9ddfff;
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+}
+
+.file-link:hover {
+  text-decoration: underline;
+}
+
+.file-link-button:hover {
+  text-decoration: underline;
+  filter: none;
+  transform: none;
+}
+
+.file-meta {
+  color: var(--sub);
+  font-size: 12px;
+}
+
 button.reaction-chip {
   width: auto;
   border: 1px solid var(--line);
@@ -240,7 +290,7 @@ button:disabled {
 
   .actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
   }
 
   .chat {

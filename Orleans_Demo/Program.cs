@@ -11,6 +11,7 @@ using Orleans.Configuration;
 using StackExchange.Redis;
 
 using System.Diagnostics;
+using System.Text.Json;
 
 using System.Net;
 
@@ -128,6 +129,15 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapHub<ChatHub>("/hubs/chat");
 
+var allowedUploadExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".txt",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"
+};
+
+const long maxUploadBytes = 15 * 1024 * 1024;
+
 app.MapPost("/api/chat/{roomId}/join", async (string roomId, ChatJoinRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
 {
     var userId = request.UserId?.Trim();
@@ -217,6 +227,95 @@ app.MapPost("/api/chat/{roomId}/message", async (string roomId, ChatSendRequest 
     await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
 
     return Results.Ok(new { roomId, userId, sequence = savedMessage.Sequence, clientMessageId = savedMessage.ClientMessageId });
+});
+
+app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId, IClusterClient client, IHubContext<ChatHub> hubContext, IWebHostEnvironment env) =>
+{
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest(new { message = "multipart/form-data is required." });
+    }
+
+    var form = await request.ReadFormAsync();
+    var userId = form["userId"].ToString().Trim();
+    var clientMessageId = form["clientMessageId"].ToString().Trim();
+    var file = form.Files["file"] ?? form.Files.FirstOrDefault();
+
+    if (string.IsNullOrWhiteSpace(userId))
+    {
+        return Results.BadRequest(new { message = "userId is required." });
+    }
+
+    if (file is null || file.Length <= 0)
+    {
+        return Results.BadRequest(new { message = "file is required." });
+    }
+
+    if (file.Length > maxUploadBytes)
+    {
+        return Results.BadRequest(new { message = "file size must be <= 15MB." });
+    }
+
+    var extension = Path.GetExtension(file.FileName) ?? string.Empty;
+    if (!allowedUploadExtensions.Contains(extension))
+    {
+        return Results.BadRequest(new { message = "unsupported file type." });
+    }
+
+    var safeOriginalName = Path.GetFileName(file.FileName);
+    var webRoot = env.WebRootPath;
+    if (string.IsNullOrWhiteSpace(webRoot))
+    {
+        webRoot = Path.Combine(env.ContentRootPath, "wwwroot");
+    }
+
+    var uploadDir = Path.Combine(webRoot, "uploads");
+    Directory.CreateDirectory(uploadDir);
+
+    var storedName = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}{extension.ToLowerInvariant()}";
+    var savePath = Path.Combine(uploadDir, storedName);
+    await using (var stream = File.Create(savePath))
+    {
+        await file.CopyToAsync(stream);
+    }
+
+    var fileUrl = "/uploads/" + storedName;
+    var payload = JsonSerializer.Serialize(new
+    {
+        url = fileUrl,
+        name = safeOriginalName,
+        contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType,
+        size = file.Length
+    });
+    var message = "__file__:" + payload;
+
+    var player = client.GetGrain<IPlayerGrain>(userId);
+    await player.JoinRoom(roomId);
+
+    var room = client.GetGrain<IRoomGrain>(roomId);
+    var savedMessage = await room.SendChat(userId, message, string.IsNullOrWhiteSpace(clientMessageId) ? null : clientMessageId);
+    await hubContext.Clients.Group(roomId).SendAsync("ChatMessageReceived", savedMessage);
+
+    await hubContext.Clients.Group(roomId).SendAsync("MessageAck", new
+    {
+        roomId,
+        userId,
+        clientMessageId = savedMessage.ClientMessageId,
+        sequence = savedMessage.Sequence
+    });
+
+    var participants = await room.GetParticipantCount();
+    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
+
+    return Results.Ok(new
+    {
+        roomId,
+        userId,
+        sequence = savedMessage.Sequence,
+        clientMessageId = savedMessage.ClientMessageId,
+        message = savedMessage.Message,
+        sentAt = savedMessage.SentAt
+    });
 });
 
 var reactHandler = async (string roomId, ChatReactionRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>

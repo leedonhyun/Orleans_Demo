@@ -1,6 +1,15 @@
 import type { RefObject } from "react";
 import type { ChatMessage } from "../types";
 
+const FILE_MESSAGE_PREFIX = "__file__:";
+
+type FilePayload = {
+  url: string;
+  name: string;
+  contentType: string;
+  size: number;
+};
+
 type MessageListProps = {
   messages: ChatMessage[];
   participantCount: number;
@@ -13,6 +22,63 @@ type MessageListProps = {
 };
 
 export default function MessageList(props: MessageListProps) {
+  const parseFilePayload = (text: string): FilePayload | null => {
+    if (!text || !text.startsWith(FILE_MESSAGE_PREFIX)) {
+      return null;
+    }
+
+    try {
+      const raw = JSON.parse(text.slice(FILE_MESSAGE_PREFIX.length)) as Record<string, unknown>;
+      const url = String(raw.url ?? "");
+      const name = String(raw.name ?? "");
+      if (!url || !name) {
+        return null;
+      }
+
+      return {
+        url,
+        name,
+        contentType: String(raw.contentType ?? "application/octet-stream"),
+        size: Number(raw.size ?? 0)
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const formatFileSize = (size: number) => {
+    if (!Number.isFinite(size) || size <= 0) {
+      return "";
+    }
+
+    if (size < 1024) {
+      return size + " B";
+    }
+    if (size < 1024 * 1024) {
+      return (size / 1024).toFixed(1) + " KB";
+    }
+    return (size / (1024 * 1024)).toFixed(1) + " MB";
+  };
+
+  const isImagePayload = (file: FilePayload) => {
+    if (file.contentType.startsWith("image/")) {
+      return true;
+    }
+
+    const lower = file.name.toLowerCase();
+    return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp");
+  };
+
+  const downloadFile = (file: FilePayload) => {
+    const link = document.createElement("a");
+    link.href = file.url;
+    link.download = file.name || "download";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
   const readCountForMessage = (message: ChatMessage) => {
     let count = 0;
     for (const [reader, seq] of Object.entries(props.readReceipts)) {
@@ -45,6 +111,7 @@ export default function MessageList(props: MessageListProps) {
       {props.messages.map((m) => {
         const key = m.sequence > 0 ? "s:" + m.sequence : "c:" + (m.clientMessageId || m.sentAt);
         const unreadRemaining = unreadRemainingForMessage(m);
+        const filePayload = parseFilePayload(m.message);
 
         const renderedReactions = m.reactions.slice();
         for (const emoji of props.quickEmojis) {
@@ -61,7 +128,23 @@ export default function MessageList(props: MessageListProps) {
                 <span className="read-state read">{"읽지않음 " + unreadRemaining}</span>
               ) : null}
             </div>
-            <div>{m.message}</div>
+            {filePayload ? (
+              <div className="file-message">
+                {isImagePayload(filePayload) ? (
+                  <img src={filePayload.url} alt={filePayload.name} className="file-preview" />
+                ) : null}
+                <button
+                  type="button"
+                  className="file-link-button"
+                  onClick={() => downloadFile(filePayload)}
+                >
+                  {filePayload.name}
+                </button>
+                <div className="file-meta">{filePayload.contentType}{formatFileSize(filePayload.size) ? " | " + formatFileSize(filePayload.size) : ""}</div>
+              </div>
+            ) : (
+              <div>{m.message}</div>
+            )}
             <div className="reactions">
               {renderedReactions.map((r) => {
                 const users = Array.isArray(r.users) ? r.users : [];

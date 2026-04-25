@@ -10,6 +10,7 @@ const ACK_TIMEOUT_MS = 2000;
 const MAX_SEND_RETRY = 3;
 const JOIN_STEP_TIMEOUT_MS = 12000;
 const QUICK_EMOJIS = ["👍", "❤️", "😂"];
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
 type PendingAck = {
   roomId: string;
@@ -740,6 +741,81 @@ export default function App() {
     }
   }, [message, notifyTyping, refresh, roomId, scheduleRetry, userId]);
 
+  const sendFile = useCallback(async (file: File) => {
+    const nextRoomId = roomId.trim();
+    const nextUserId = userId.trim();
+
+    if (!nextRoomId || !nextUserId) {
+      setStatus({ ok: false, text: "roomId/userId를 먼저 입력해 주세요." });
+      return;
+    }
+
+    if (!file) {
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setStatus({ ok: false, text: "파일은 15MB 이하만 전송할 수 있습니다." });
+      return;
+    }
+
+    if (!isJoinedRef.current || connectedRoomIdRef.current !== nextRoomId) {
+      setStatus({ ok: false, text: "Join 상태 재동기화 중입니다. 파일 전송을 시도합니다..." });
+    }
+
+    if (!localUserIdRef.current) {
+      localUserIdRef.current = nextUserId;
+    }
+
+    forceScrollOnNextRenderRef.current = true;
+    const clientMessageId = generateClientMessageId();
+
+    setBusy((prev) => ({ ...prev, send: true }));
+    await notifyTyping(false);
+
+    try {
+      const formData = new FormData();
+      formData.append("userId", nextUserId);
+      formData.append("clientMessageId", clientMessageId);
+      formData.append("file", file);
+
+      const res = await fetch("/api/chat/" + encodeURIComponent(nextRoomId) + "/file", {
+        method: "POST",
+        body: formData
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || "파일 전송 실패");
+      }
+
+      const sent = (await res.json()) as Record<string, unknown>;
+      const sequence = Number(sent.sequence ?? sent.Sequence ?? 0);
+
+      if (sequence > 0) {
+        setMessages((prev) =>
+          upsertMessageList(prev, {
+            sequence,
+            userId: String(sent.userId ?? sent.UserId ?? nextUserId),
+            message: String(sent.message ?? sent.Message ?? ""),
+            sentAt: String(sent.sentAt ?? sent.SentAt ?? new Date().toISOString()),
+            clientMessageId: String(sent.clientMessageId ?? sent.ClientMessageId ?? clientMessageId),
+            reactions: []
+          })
+        );
+      }
+
+      suppressPollRefreshUntilRef.current = Date.now() + 1500;
+      await refresh({ source: "reconcile", force: true });
+    } catch (err) {
+      console.error(err);
+      setStatus({ ok: false, text: "File send failed: " + (err as Error).message });
+      await refresh({ source: "reconcile", force: true }).catch(console.error);
+    } finally {
+      setBusy((prev) => ({ ...prev, send: false }));
+    }
+  }, [notifyTyping, refresh, roomId, userId]);
+
   const onMessageChange = useCallback(
     (nextValue: string) => {
       setMessage(nextValue);
@@ -828,6 +904,12 @@ export default function App() {
         onRefresh={() => {
           void refresh({ source: "manual" }).catch((err: Error) => {
             setStatus({ ok: false, text: "Refresh failed: " + err.message });
+            alert(err.message);
+          });
+        }}
+        onSendFile={(file) => {
+          void sendFile(file).catch((err: Error) => {
+            setStatus({ ok: false, text: "File send failed: " + err.message });
             alert(err.message);
           });
         }}
