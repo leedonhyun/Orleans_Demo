@@ -3,6 +3,7 @@ using GrainInterfaces;
 using GrainImplement;
 
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.StaticFiles;
 
 
 using Marten;
@@ -279,7 +280,7 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId
         await file.CopyToAsync(stream);
     }
 
-    var fileUrl = "/uploads/" + storedName;
+    var fileUrl = "/api/chat/file/" + Uri.EscapeDataString(storedName);
     var payload = JsonSerializer.Serialize(new
     {
         url = fileUrl,
@@ -316,6 +317,36 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId
         message = savedMessage.Message,
         sentAt = savedMessage.SentAt
     });
+});
+
+app.MapGet("/api/chat/file/{fileName}", (string fileName, IWebHostEnvironment env) =>
+{
+    var safeName = Path.GetFileName(fileName);
+    if (string.IsNullOrWhiteSpace(safeName) || safeName != fileName)
+    {
+        return Results.BadRequest(new { message = "invalid file name." });
+    }
+
+    var webRoot = env.WebRootPath;
+    if (string.IsNullOrWhiteSpace(webRoot))
+    {
+        webRoot = Path.Combine(env.ContentRootPath, "wwwroot");
+    }
+
+    var uploadDir = Path.Combine(webRoot, "uploads");
+    var fullPath = Path.Combine(uploadDir, safeName);
+    if (!File.Exists(fullPath))
+    {
+        return Results.NotFound(new { message = "file not found." });
+    }
+
+    var provider = new FileExtensionContentTypeProvider();
+    if (!provider.TryGetContentType(fullPath, out var contentType))
+    {
+        contentType = "application/octet-stream";
+    }
+
+    return Results.File(fullPath, contentType, enableRangeProcessing: true);
 });
 
 var reactHandler = async (string roomId, ChatReactionRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>

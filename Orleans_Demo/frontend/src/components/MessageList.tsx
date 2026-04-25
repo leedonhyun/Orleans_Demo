@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
 import type { ChatMessage } from "../types";
 
@@ -22,6 +23,8 @@ type MessageListProps = {
 };
 
 export default function MessageList(props: MessageListProps) {
+  const [textPreviewByUrl, setTextPreviewByUrl] = useState<Record<string, string>>({});
+
   const parseFilePayload = (text: string): FilePayload | null => {
     if (!text || !text.startsWith(FILE_MESSAGE_PREFIX)) {
       return null;
@@ -69,6 +72,15 @@ export default function MessageList(props: MessageListProps) {
     return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp");
   };
 
+  const isTextPayload = (file: FilePayload) => {
+    if (file.contentType.startsWith("text/")) {
+      return true;
+    }
+
+    const lower = file.name.toLowerCase();
+    return lower.endsWith(".txt");
+  };
+
   const fileExtensionLabel = (fileName: string) => {
     const idx = fileName.lastIndexOf(".");
     if (idx < 0 || idx === fileName.length - 1) {
@@ -77,6 +89,65 @@ export default function MessageList(props: MessageListProps) {
 
     const ext = fileName.slice(idx + 1).toUpperCase();
     return ext.length > 5 ? ext.slice(0, 5) : ext;
+  };
+
+  const filePayloads = useMemo(() => {
+    return props.messages
+      .map((m) => parseFilePayload(m.message))
+      .filter((x): x is FilePayload => x !== null);
+  }, [props.messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const pending = filePayloads.filter((file) => isTextPayload(file) && !textPreviewByUrl[file.url]);
+    if (pending.length === 0) {
+      return;
+    }
+
+    for (const file of pending) {
+      void (async () => {
+        try {
+          const res = await fetch(file.url, { cache: "no-store" });
+          if (!res.ok) {
+            throw new Error("failed to load preview");
+          }
+
+          const text = await res.text();
+          const preview = text.replace(/\s+/g, " ").trim().slice(0, 48);
+          const safePreview = preview || "(empty text file)";
+
+          if (!cancelled) {
+            setTextPreviewByUrl((prev) => ({ ...prev, [file.url]: safePreview }));
+          }
+        } catch {
+          if (!cancelled) {
+            setTextPreviewByUrl((prev) => ({ ...prev, [file.url]: "preview unavailable" }));
+          }
+        }
+      })();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filePayloads, textPreviewByUrl]);
+
+  const getBriefPreview = (file: FilePayload) => {
+    if (isImagePayload(file)) {
+      return "image";
+    }
+
+    if (isTextPayload(file)) {
+      return textPreviewByUrl[file.url] || "loading preview...";
+    }
+
+    const base = file.name.replace(/\.[^/.]+$/, "").trim();
+    if (base) {
+      return base.length > 24 ? base.slice(0, 24) + "..." : base;
+    }
+
+    return fileExtensionLabel(file.name);
   };
 
   const downloadFile = (file: FilePayload) => {
@@ -145,7 +216,7 @@ export default function MessageList(props: MessageListProps) {
                     {isImagePayload(filePayload) ? (
                       <img src={filePayload.url} alt="" className="file-thumb-image" />
                     ) : (
-                      <span className="file-thumb-ext">{fileExtensionLabel(filePayload.name)}</span>
+                      <span className="file-thumb-text">{getBriefPreview(filePayload)}</span>
                     )}
                   </div>
                   <div className="file-info">
@@ -156,6 +227,7 @@ export default function MessageList(props: MessageListProps) {
                     >
                       {filePayload.name}
                     </button>
+                    <div className="file-preview-text">{getBriefPreview(filePayload)}</div>
                     <div className="file-meta">{filePayload.contentType}{formatFileSize(filePayload.size) ? " | " + formatFileSize(filePayload.size) : ""}</div>
                   </div>
                 </div>

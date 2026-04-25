@@ -152,6 +152,19 @@ body {
   font-weight: 700;
 }
 
+.file-thumb-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.15;
+  color: var(--sub);
+  padding: 4px;
+  text-align: center;
+}
+
 .file-info {
   min-width: 0;
   display: grid;
@@ -201,6 +214,15 @@ body {
 .file-meta {
   color: var(--sub);
   font-size: 12px;
+}
+
+.file-preview-text {
+  color: #cde8f8;
+  font-size: 11px;
+  opacity: 0.9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 button.reaction-chip {
