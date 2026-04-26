@@ -15,6 +15,7 @@ using System.Diagnostics;
 using System.Text.Json;
 
 using System.Net;
+using Microsoft.AspNetCore.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -96,39 +97,68 @@ builder.Services.AddMarten(options =>
 {
     options.Connection(builder.Configuration.GetConnectionString("MyDatabase"));
     options.DatabaseSchemaName = "incidents";
+    options.Schema.For<UserCredentialDocument>();
+    options.Schema.For<RoomDocument>();
+    options.Schema.For<RoomMemberDocument>();
     //    options.Schema.For<MyDocument1>();
     //    options.Schema.For<MyDocument2>();
 });
+const string forcedRedisConnectionString = "localhost:6379,abortConnect=false";
+
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    var redisOptions = ConfigurationOptions.Parse(forcedRedisConnectionString, true);
+    redisOptions.AbortOnConnectFail = false;
+    redisOptions.ConnectRetry = Math.Max(redisOptions.ConnectRetry, 5);
+    redisOptions.ConnectTimeout = Math.Max(redisOptions.ConnectTimeout, 10000);
+    redisOptions.SyncTimeout = Math.Max(redisOptions.SyncTimeout, 10000);
+
+    options.ConfigurationOptions = redisOptions;
+    options.InstanceName = "orleans-demo:session:";
+});
+
+builder.Services.AddSession(options =>
+{
+    options.Cookie.Name = ".orleans.demo.session";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.IdleTimeout = TimeSpan.FromHours(8);
+});
 var signalRBuilder = builder.Services.AddSignalR();
 
-var useSignalRRedis = builder.Configuration.GetValue<bool>("SignalR:Redis:Enabled");
-if (useSignalRRedis)
+signalRBuilder.AddStackExchangeRedis(forcedRedisConnectionString, options =>
 {
-    var signalRRedisConnectionString = builder.Configuration["SignalR:Redis:ConnectionString"]
-        ?? builder.Configuration.GetConnectionString("SignalRRedis")
-        ?? builder.Configuration.GetConnectionString("Redis");
-
-    if (string.IsNullOrWhiteSpace(signalRRedisConnectionString))
-    {
-        throw new InvalidOperationException("SignalR Redis is enabled, but no Redis connection string was configured.");
-    }
-
-    signalRBuilder.AddStackExchangeRedis(signalRRedisConnectionString, options =>
-    {
-        var redisOptions = ConfigurationOptions.Parse(signalRRedisConnectionString, true);
-        redisOptions.AbortOnConnectFail = false;
-        redisOptions.ConnectRetry = Math.Max(redisOptions.ConnectRetry, 5);
-        redisOptions.ConnectTimeout = Math.Max(redisOptions.ConnectTimeout, 10000);
-        redisOptions.SyncTimeout = Math.Max(redisOptions.SyncTimeout, 10000);
-        options.Configuration = redisOptions;
-    });
-}
+    var redisOptions = ConfigurationOptions.Parse(forcedRedisConnectionString, true);
+    redisOptions.AbortOnConnectFail = false;
+    redisOptions.ConnectRetry = Math.Max(redisOptions.ConnectRetry, 5);
+    redisOptions.ConnectTimeout = Math.Max(redisOptions.ConnectTimeout, 10000);
+    redisOptions.SyncTimeout = Math.Max(redisOptions.SyncTimeout, 10000);
+    options.Configuration = redisOptions;
+});
 
 var app = builder.Build();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseSession();
 app.MapHub<ChatHub>("/hubs/chat");
+
+static (bool HasSession, bool IsMatch, string SessionUserId) GetSessionAuthStatus(HttpContext httpContext, string? requestedUserId)
+{
+    var normalizedUserId = requestedUserId?.Trim();
+    if (string.IsNullOrWhiteSpace(normalizedUserId))
+    {
+        return (false, false, string.Empty);
+    }
+
+    var sessionUserId = httpContext.Session.GetString("auth.userId")?.Trim();
+    if (string.IsNullOrWhiteSpace(sessionUserId))
+    {
+        return (false, false, string.Empty);
+    }
+
+    return (true, string.Equals(sessionUserId, normalizedUserId, StringComparison.Ordinal), sessionUserId);
+}
 
 var allowedUploadExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
@@ -194,7 +224,7 @@ app.MapPost("/api/chat/{roomId}/leave-keepalive", async (string roomId, string u
     return Results.Ok(new { roomId, userId = resolvedUserId });
 });
 
-app.MapPost("/api/chat/{roomId}/message", async (string roomId, ChatSendRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+app.MapPost("/api/chat/{roomId}/message", async (HttpContext httpContext, string roomId, ChatSendRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
 {
     var userId = request.UserId?.Trim();
     var message = request.Message?.Trim();
@@ -210,17 +240,25 @@ app.MapPost("/api/chat/{roomId}/message", async (string roomId, ChatSendRequest 
         return Results.BadRequest(new { message = "message is required." });
     }
 
-    var player = client.GetGrain<IPlayerGrain>(userId);
+    var authStatus = GetSessionAuthStatus(httpContext, userId);
+    if (!authStatus.HasSession)
+    {
+        return Results.Unauthorized();
+    }
+
+    var effectiveUserId = authStatus.IsMatch ? userId! : authStatus.SessionUserId;
+
+    var player = client.GetGrain<IPlayerGrain>(effectiveUserId);
     await player.JoinRoom(roomId);
 
     var room = client.GetGrain<IRoomGrain>(roomId);
-    var savedMessage = await room.SendChat(userId, message, clientMessageId);
+    var savedMessage = await room.SendChat(effectiveUserId, message, clientMessageId);
     await hubContext.Clients.Group(roomId).SendAsync("ChatMessageReceived", savedMessage);
 
     await hubContext.Clients.Group(roomId).SendAsync("MessageAck", new
     {
         roomId,
-        userId,
+        userId = effectiveUserId,
         clientMessageId = savedMessage.ClientMessageId,
         sequence = savedMessage.Sequence
     });
@@ -228,10 +266,10 @@ app.MapPost("/api/chat/{roomId}/message", async (string roomId, ChatSendRequest 
     var participants = await room.GetParticipantCount();
     await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
 
-    return Results.Ok(new { roomId, userId, sequence = savedMessage.Sequence, clientMessageId = savedMessage.ClientMessageId });
+    return Results.Ok(new { roomId, userId = effectiveUserId, sequence = savedMessage.Sequence, clientMessageId = savedMessage.ClientMessageId });
 });
 
-app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId, IClusterClient client, IHubContext<ChatHub> hubContext, IWebHostEnvironment env) =>
+app.MapPost("/api/chat/{roomId}/file", async (HttpContext httpContext, HttpRequest request, string roomId, IClusterClient client, IHubContext<ChatHub> hubContext, IWebHostEnvironment env) =>
 {
     if (!request.HasFormContentType)
     {
@@ -247,6 +285,14 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId
     {
         return Results.BadRequest(new { message = "userId is required." });
     }
+
+    var authStatus = GetSessionAuthStatus(httpContext, userId);
+    if (!authStatus.HasSession)
+    {
+        return Results.Unauthorized();
+    }
+
+    var effectiveUserId = authStatus.IsMatch ? userId : authStatus.SessionUserId;
 
     if (file is null || file.Length <= 0)
     {
@@ -291,17 +337,17 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId
     });
     var message = "__file__:" + payload;
 
-    var player = client.GetGrain<IPlayerGrain>(userId);
+    var player = client.GetGrain<IPlayerGrain>(effectiveUserId);
     await player.JoinRoom(roomId);
 
     var room = client.GetGrain<IRoomGrain>(roomId);
-    var savedMessage = await room.SendChat(userId, message, string.IsNullOrWhiteSpace(clientMessageId) ? null : clientMessageId);
+    var savedMessage = await room.SendChat(effectiveUserId, message, string.IsNullOrWhiteSpace(clientMessageId) ? null : clientMessageId);
     await hubContext.Clients.Group(roomId).SendAsync("ChatMessageReceived", savedMessage);
 
     await hubContext.Clients.Group(roomId).SendAsync("MessageAck", new
     {
         roomId,
-        userId,
+        userId = effectiveUserId,
         clientMessageId = savedMessage.ClientMessageId,
         sequence = savedMessage.Sequence
     });
@@ -312,7 +358,7 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpRequest request, string roomId
     return Results.Ok(new
     {
         roomId,
-        userId,
+        userId = effectiveUserId,
         sequence = savedMessage.Sequence,
         clientMessageId = savedMessage.ClientMessageId,
         message = savedMessage.Message,
@@ -403,6 +449,117 @@ app.MapGet("/api/chat/{roomId}/messages", async (string roomId, IClusterClient c
     });
 });
 
+app.MapPost("/api/auth/login", async (HttpContext httpContext, LoginRequest request, IQuerySession session) =>
+{
+    var userId = request.UserId?.Trim();
+    var password = request.Password ?? string.Empty;
+
+    if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(password))
+    {
+        return Results.BadRequest(new { message = "userId and password are required." });
+    }
+
+    var user = await session.Query<UserCredentialDocument>()
+        .FirstOrDefaultAsync(x => x.UserId == userId && x.IsActive);
+
+    if (user is null || !string.Equals(user.Password, password, StringComparison.Ordinal))
+    {
+        return Results.Unauthorized();
+    }
+
+    httpContext.Session.SetString("auth.userId", user.UserId);
+    httpContext.Session.SetString("auth.displayName", string.IsNullOrWhiteSpace(user.DisplayName) ? user.UserId : user.DisplayName);
+
+    return Results.Ok(new
+    {
+        userId = user.UserId,
+        displayName = string.IsNullOrWhiteSpace(user.DisplayName) ? user.UserId : user.DisplayName
+    });
+});
+
+app.MapPost("/api/auth/register", async (RegisterRequest request, IQuerySession querySession, IDocumentSession documentSession) =>
+{
+    var userId = request.UserId?.Trim();
+    var password = request.Password ?? string.Empty;
+    var displayName = request.DisplayName?.Trim() ?? string.Empty;
+
+    if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(password))
+    {
+        return Results.BadRequest(new { message = "userId and password are required." });
+    }
+
+    var exists = await querySession.Query<UserCredentialDocument>()
+        .AnyAsync(x => x.UserId == userId);
+
+    if (exists)
+    {
+        return Results.Conflict(new { message = "userId already exists." });
+    }
+
+    var doc = new UserCredentialDocument
+    {
+        UserId = userId,
+        Password = password,
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? userId : displayName,
+        IsActive = true
+    };
+
+    documentSession.Store(doc);
+    await documentSession.SaveChangesAsync();
+
+    return Results.Created($"/api/users/{Uri.EscapeDataString(userId)}", new
+    {
+        userId = doc.UserId,
+        displayName = doc.DisplayName
+    });
+});
+
+app.MapGet("/api/lobby/rooms", async (IQuerySession session) =>
+{
+    var rooms = await session.Query<RoomDocument>()
+        .Where(x => x.IsActive)
+        .OrderBy(x => x.SortOrder)
+        .ThenBy(x => x.RoomId)
+        .ToListAsync();
+
+    return Results.Ok(rooms.Select(x => new
+    {
+        roomId = x.RoomId,
+        name = string.IsNullOrWhiteSpace(x.Name) ? x.RoomId : x.Name
+    }));
+});
+
+app.MapGet("/api/lobby/rooms/{roomId}/users", async (string roomId, IQuerySession session) =>
+{
+    var normalizedRoomId = roomId?.Trim();
+    if (string.IsNullOrWhiteSpace(normalizedRoomId))
+    {
+        return Results.BadRequest(new { message = "roomId is required." });
+    }
+
+    var memberUserIds = await session.Query<RoomMemberDocument>()
+        .Where(x => x.RoomId == normalizedRoomId)
+        .Select(x => x.UserId)
+        .Distinct()
+        .ToListAsync();
+
+    if (memberUserIds.Count == 0)
+    {
+        return Results.Ok(Array.Empty<object>());
+    }
+
+    var users = await session.Query<UserCredentialDocument>()
+        .Where(x => x.IsActive && memberUserIds.Contains(x.UserId))
+        .OrderBy(x => x.UserId)
+        .ToListAsync();
+
+    return Results.Ok(users.Select(x => new
+    {
+        userId = x.UserId,
+        displayName = string.IsNullOrWhiteSpace(x.DisplayName) ? x.UserId : x.DisplayName
+    }));
+});
+
 
 //app.MapGet("/startchat", () => Results.Ok(new
 //{
@@ -466,3 +623,32 @@ public record ChatLeaveRequest(string UserId);
 public record ChatSendRequest(string UserId, string Message, string? ClientMessageId);
 
 public record ChatReactionRequest(string UserId, long Sequence, string Emoji);
+
+public record LoginRequest(string UserId, string Password);
+
+public record RegisterRequest(string UserId, string Password, string? DisplayName);
+
+public class UserCredentialDocument
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string UserId { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public class RoomDocument
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string RoomId { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public class RoomMemberDocument
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string RoomId { get; set; } = string.Empty;
+    public string UserId { get; set; } = string.Empty;
+}

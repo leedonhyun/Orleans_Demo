@@ -12,11 +12,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:5066",
+        target: "http://127.0.0.1:5050",
         changeOrigin: true
       },
       "/hubs": {
-        target: "http://127.0.0.1:5066",
+        target: "http://127.0.0.1:5050",
         changeOrigin: true,
         ws: true
       }

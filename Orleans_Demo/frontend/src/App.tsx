@@ -20,6 +20,16 @@ type PendingAck = {
   timerId: ReturnType<typeof setTimeout> | null;
 };
 
+type LobbyRoom = {
+  roomId: string;
+  name: string;
+};
+
+type LobbyUser = {
+  userId: string;
+  displayName: string;
+};
+
 function normalizeReaction(item: unknown): Reaction {
   const value = item as Record<string, unknown>;
   const users = value.users ?? value.Users;
@@ -40,6 +50,26 @@ function normalizeMessage(item: unknown): ChatMessage {
     sentAt: String(value.sentAt ?? value.SentAt ?? new Date().toISOString()),
     clientMessageId: String(value.clientMessageId ?? value.ClientMessageId ?? ""),
     reactions: Array.isArray(rawReactions) ? rawReactions.map(normalizeReaction) : []
+  };
+}
+
+function normalizeLobbyRoom(item: unknown): LobbyRoom {
+  const value = item as Record<string, unknown>;
+  const roomId = String(value.roomId ?? value.RoomId ?? "").trim();
+  const name = String(value.name ?? value.Name ?? roomId).trim();
+  return {
+    roomId,
+    name: name || roomId
+  };
+}
+
+function normalizeLobbyUser(item: unknown): LobbyUser {
+  const value = item as Record<string, unknown>;
+  const userId = String(value.userId ?? value.UserId ?? "").trim();
+  const displayName = String(value.displayName ?? value.DisplayName ?? userId).trim();
+  return {
+    userId,
+    displayName: displayName || userId
   };
 }
 
@@ -109,6 +139,7 @@ function getMaxSequence(messages: ChatMessage[]) {
 async function callApi(url: string, method = "GET", body: unknown = null) {
   const options: RequestInit = {
     method,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json"
     }
@@ -175,6 +206,16 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 export default function App() {
   const [roomId, setRoomId] = useState("lobby");
   const [userId, setUserId] = useState("player-1");
+  const [loginUserId, setLoginUserId] = useState("player-1");
+  const [password, setPassword] = useState("");
+  const [registerUserId, setRegisterUserId] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerDisplayName, setRegisterDisplayName] = useState("");
+  const [authScreen, setAuthScreen] = useState<"login" | "register">("login");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [rooms, setRooms] = useState<LobbyRoom[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState("");
+  const [roomUsers, setRoomUsers] = useState<LobbyUser[]>([]);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [readReceipts, setReadReceipts] = useState<Record<string, number>>({});
@@ -184,6 +225,7 @@ export default function App() {
   const [isJoined, setIsJoined] = useState(false);
   const [connectedRoomId, setConnectedRoomId] = useState("");
   const [busy, setBusy] = useState<BusyState>({ join: false, send: false });
+  const [busyLobby, setBusyLobby] = useState({ login: false, register: false, rooms: false, users: false });
 
   const chatBoxRef = useRef<HTMLElement>(null);
   const listEndRef = useRef<HTMLDivElement>(null);
@@ -545,12 +587,143 @@ export default function App() {
           clientMessageId
         });
       } catch (err) {
+        const statusCode = (err as { status?: number }).status;
+        if (statusCode === 401 || statusCode === 403) {
+          pendingAcksRef.current.delete(clientMessageId);
+          setStatus({ ok: false, text: statusCode === 401 ? "인증 세션이 만료되었습니다." : "로그인 계정과 userId가 달라 전송 재시도를 중단합니다." });
+          return;
+        }
         console.error(err);
       }
 
       scheduleRetry(clientMessageId);
     }, ACK_TIMEOUT_MS);
   }, []);
+
+  const loadRooms = useCallback(async () => {
+    setBusyLobby((prev) => ({ ...prev, rooms: true }));
+    try {
+      const data = await callApi("/api/lobby/rooms");
+      const nextRooms = Array.isArray(data) ? data.map(normalizeLobbyRoom).filter((x) => x.roomId) : [];
+      setRooms(nextRooms);
+
+      if (nextRooms.length === 0) {
+        setSelectedRoomId("");
+        setRoomUsers([]);
+        return;
+      }
+
+      const current = selectedRoomId.trim();
+      const nextSelected = current && nextRooms.some((x) => x.roomId === current)
+        ? current
+        : nextRooms[0].roomId;
+
+      setSelectedRoomId(nextSelected);
+      setRoomId(nextSelected);
+    } finally {
+      setBusyLobby((prev) => ({ ...prev, rooms: false }));
+    }
+  }, [selectedRoomId]);
+
+  const loadRoomUsers = useCallback(async (nextRoomId: string) => {
+    const normalized = nextRoomId.trim();
+    if (!normalized) {
+      setRoomUsers([]);
+      return;
+    }
+
+    setBusyLobby((prev) => ({ ...prev, users: true }));
+    try {
+      const data = await callApi("/api/lobby/rooms/" + encodeURIComponent(normalized) + "/users");
+      const users = Array.isArray(data) ? data.map(normalizeLobbyUser).filter((x) => x.userId) : [];
+      setRoomUsers(users);
+    } finally {
+      setBusyLobby((prev) => ({ ...prev, users: false }));
+    }
+  }, []);
+
+  const login = useCallback(async () => {
+    const nextUserId = loginUserId.trim();
+    const nextPassword = password;
+    if (!nextUserId || !nextPassword) {
+      setStatus({ ok: false, text: "아이디/비밀번호를 입력해 주세요." });
+      return;
+    }
+
+    setBusyLobby((prev) => ({ ...prev, login: true }));
+    try {
+      const response = (await callApi("/api/auth/login", "POST", {
+        userId: nextUserId,
+        password: nextPassword
+      })) as Record<string, unknown>;
+
+      const resolvedUserId = String(response.userId ?? response.UserId ?? nextUserId).trim() || nextUserId;
+      setIsAuthenticated(true);
+      setUserId(resolvedUserId);
+      setLoginUserId(resolvedUserId);
+      setAuthScreen("login");
+      setStatus({ ok: true, text: "로그인 성공" });
+
+      await loadRooms();
+    } finally {
+      setBusyLobby((prev) => ({ ...prev, login: false }));
+    }
+  }, [loginUserId, password, loadRooms]);
+
+  const registerUser = useCallback(async () => {
+    const nextUserId = registerUserId.trim();
+    const nextPassword = registerPassword;
+    const nextDisplayName = registerDisplayName.trim();
+
+    if (!nextUserId || !nextPassword) {
+      setStatus({ ok: false, text: "회원가입: 아이디/비밀번호를 입력해 주세요." });
+      return;
+    }
+
+    setBusyLobby((prev) => ({ ...prev, register: true }));
+    try {
+      const response = (await callApi("/api/auth/register", "POST", {
+        userId: nextUserId,
+        password: nextPassword,
+        displayName: nextDisplayName || null
+      })) as Record<string, unknown>;
+
+      const createdName = String(response.displayName ?? response.DisplayName ?? nextUserId).trim() || nextUserId;
+      setRegisterDisplayName(createdName);
+      setLoginUserId(nextUserId);
+      setPassword("");
+      setRegisterUserId("");
+      setRegisterPassword("");
+      setAuthScreen("login");
+      setStatus({ ok: true, text: "회원가입 완료: 로그인해 주세요." });
+    } finally {
+      setBusyLobby((prev) => ({ ...prev, register: false }));
+    }
+  }, [registerUserId, registerPassword, registerDisplayName]);
+
+  const selectRoom = useCallback(async (nextRoomId: string) => {
+    const normalized = nextRoomId.trim();
+    if (!normalized) {
+      return;
+    }
+
+    setSelectedRoomId(normalized);
+    setRoomId(normalized);
+    await loadRoomUsers(normalized);
+  }, [loadRoomUsers]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    if (!selectedRoomId) {
+      setRoomUsers([]);
+      return;
+    }
+
+    void loadRoomUsers(selectedRoomId).catch(console.error);
+  }, [isAuthenticated, loadRoomUsers, selectedRoomId]);
 
   const join = useCallback(async () => {
     const nextRoomId = roomId.trim();
@@ -657,6 +830,11 @@ export default function App() {
     const nextUserId = userId.trim();
     const nextMessage = message.trim();
 
+    if (!isAuthenticated) {
+      setStatus({ ok: false, text: "인증 세션이 없습니다. 로그인 후 다시 시도해 주세요." });
+      return;
+    }
+
     if (!nextRoomId || !nextUserId) {
       setStatus({ ok: false, text: "roomId/userId를 먼저 입력해 주세요." });
       return;
@@ -733,17 +911,38 @@ export default function App() {
       await refresh({ source: "reconcile", force: true });
     } catch (err) {
       console.error(err);
+      const statusCode = (err as { status?: number }).status;
+      if (statusCode === 401) {
+        pendingAcksRef.current.delete(clientMessageId);
+        setDisconnected("인증 세션이 만료되었습니다. 다시 로그인해 주세요.");
+        setIsAuthenticated(false);
+        setAuthScreen("login");
+        setStatus({ ok: false, text: "인증 세션이 만료되었습니다. 로그인 창으로 이동합니다." });
+        return;
+      }
+
+      if (statusCode === 403) {
+        pendingAcksRef.current.delete(clientMessageId);
+        setStatus({ ok: false, text: "로그인 계정과 현재 userId가 다릅니다. userId를 로그인 아이디로 맞춰주세요." });
+        return;
+      }
+
       setStatus({ ok: false, text: "Send failed: " + (err as Error).message });
       await refresh({ source: "reconcile", force: true }).catch(console.error);
     } finally {
       scheduleRetry(clientMessageId);
       setBusy((prev) => ({ ...prev, send: false }));
     }
-  }, [message, notifyTyping, refresh, roomId, scheduleRetry, userId]);
+  }, [isAuthenticated, message, notifyTyping, refresh, roomId, scheduleRetry, setDisconnected, userId]);
 
   const sendFile = useCallback(async (file: File) => {
     const nextRoomId = roomId.trim();
     const nextUserId = userId.trim();
+
+    if (!isAuthenticated) {
+      setStatus({ ok: false, text: "인증 세션이 없습니다. 로그인 후 다시 시도해 주세요." });
+      return;
+    }
 
     if (!nextRoomId || !nextUserId) {
       setStatus({ ok: false, text: "roomId/userId를 먼저 입력해 주세요." });
@@ -781,12 +980,15 @@ export default function App() {
 
       const res = await fetch("/api/chat/" + encodeURIComponent(nextRoomId) + "/file", {
         method: "POST",
+        credentials: "include",
         body: formData
       });
 
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(txt || "파일 전송 실패");
+        const err = new Error(txt || "파일 전송 실패") as Error & { status?: number };
+        err.status = res.status;
+        throw err;
       }
 
       const sent = (await res.json()) as Record<string, unknown>;
@@ -809,12 +1011,26 @@ export default function App() {
       await refresh({ source: "reconcile", force: true });
     } catch (err) {
       console.error(err);
+      const statusCode = (err as { status?: number }).status;
+      if (statusCode === 401) {
+        setDisconnected("인증 세션이 만료되었습니다. 다시 로그인해 주세요.");
+        setIsAuthenticated(false);
+        setAuthScreen("login");
+        setStatus({ ok: false, text: "인증 세션이 만료되었습니다. 로그인 창으로 이동합니다." });
+        return;
+      }
+
+      if (statusCode === 403) {
+        setStatus({ ok: false, text: "로그인 계정과 현재 userId가 다릅니다. userId를 로그인 아이디로 맞춰주세요." });
+        return;
+      }
+
       setStatus({ ok: false, text: "File send failed: " + (err as Error).message });
       await refresh({ source: "reconcile", force: true }).catch(console.error);
     } finally {
       setBusy((prev) => ({ ...prev, send: false }));
     }
-  }, [notifyTyping, refresh, roomId, userId]);
+  }, [isAuthenticated, notifyTyping, refresh, roomId, setDisconnected, userId]);
 
   const onMessageChange = useCallback(
     (nextValue: string) => {
@@ -857,63 +1073,228 @@ export default function App() {
   }, [typingUsers]);
 
   return (
-    <main className="shell">
+    <main className={"shell" + (!isAuthenticated ? " auth-shell" : "")}>
       <Header status={status} />
-      <Controls
-        roomId={roomId}
-        userId={userId}
-        busyJoin={busy.join}
-        setRoomId={setRoomId}
-        setUserId={setUserId}
-        onJoin={() => {
-          void join().catch((err: Error) => {
-            setStatus({ ok: false, text: "Join failed: " + err.message });
-            alert(err.message);
-          });
-        }}
-        onLeave={() => {
-          void leave().catch((err: Error) => {
-            setStatus({ ok: false, text: "Leave failed: " + err.message });
-            alert(err.message);
-          });
-        }}
-      />
-      <MessageList
-        messages={messages}
-        participantCount={participantCount}
-        localUserId={localUserIdRef.current}
-        readReceipts={readReceipts}
-        quickEmojis={QUICK_EMOJIS}
-        chatBoxRef={chatBoxRef}
-        listEndRef={listEndRef}
-        onToggleReaction={(sequence, emoji) => {
-          void toggleReaction(sequence, emoji).catch(console.error);
-        }}
-      />
-      <Composer
-        message={message}
-        typingText={typingText}
-        busySend={busy.send}
-        setMessageValue={onMessageChange}
-        onSend={() => {
-          void send().catch((err: Error) => {
-            setStatus({ ok: false, text: "Send failed: " + err.message });
-            alert(err.message);
-          });
-        }}
-        onRefresh={() => {
-          void refresh({ source: "manual" }).catch((err: Error) => {
-            setStatus({ ok: false, text: "Refresh failed: " + err.message });
-            alert(err.message);
-          });
-        }}
-        onSendFile={(file) => {
-          void sendFile(file).catch((err: Error) => {
-            setStatus({ ok: false, text: "File send failed: " + err.message });
-            alert(err.message);
-          });
-        }}
-      />
+      {!isAuthenticated ? (
+        <section className="auth-only">
+          <div className="auth-card">
+            {authScreen === "login" ? (
+              <>
+                <h2 className="card-title">로그인</h2>
+                <div className="auth-grid">
+                  <input
+                    placeholder="아이디"
+                    value={loginUserId}
+                    onChange={(e) => setLoginUserId(e.target.value)}
+                    disabled={busyLobby.login || busyLobby.register}
+                  />
+                  <input
+                    type="password"
+                    placeholder="비밀번호"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={busyLobby.login || busyLobby.register}
+                  />
+                  <div className="auth-actions single">
+                    <button
+                      onClick={() => {
+                        void login().catch((err: Error) => {
+                          setStatus({ ok: false, text: "로그인 실패: " + err.message });
+                          alert(err.message);
+                        });
+                      }}
+                      disabled={busyLobby.login || busyLobby.register}
+                    >
+                      {busyLobby.login ? "로그인 중..." : "로그인"}
+                    </button>
+                  </div>
+                </div>
+                <div className="auth-switch">
+                  <button
+                    onClick={() => setAuthScreen("register")}
+                    disabled={busyLobby.login || busyLobby.register}
+                  >
+                    회원가입
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="card-title">회원가입</h2>
+                <div className="auth-grid">
+                  <input
+                    placeholder="회원가입 아이디"
+                    value={registerUserId}
+                    onChange={(e) => setRegisterUserId(e.target.value)}
+                    disabled={busyLobby.login || busyLobby.register}
+                  />
+                  <input
+                    type="password"
+                    placeholder="회원가입 비밀번호"
+                    value={registerPassword}
+                    onChange={(e) => setRegisterPassword(e.target.value)}
+                    disabled={busyLobby.login || busyLobby.register}
+                  />
+                  <input
+                    placeholder="표시 이름(선택)"
+                    value={registerDisplayName}
+                    onChange={(e) => setRegisterDisplayName(e.target.value)}
+                    disabled={busyLobby.login || busyLobby.register}
+                  />
+                  <div className="auth-actions single">
+                    <button
+                      onClick={() => {
+                        void registerUser().catch((err: Error) => {
+                          setStatus({ ok: false, text: "회원가입 실패: " + err.message });
+                          alert(err.message);
+                        });
+                      }}
+                      disabled={busyLobby.login || busyLobby.register}
+                    >
+                      {busyLobby.register ? "회원가입 중..." : "회원가입"}
+                    </button>
+                  </div>
+                </div>
+                <div className="auth-switch">
+                  <button
+                    onClick={() => setAuthScreen("login")}
+                    disabled={busyLobby.login || busyLobby.register}
+                  >
+                    로그인 화면으로
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </section>
+      ) : (
+        <section className="lobby-only">
+          <div className="lobby-card">
+          <div className="lobby-head">
+            <h2 className="card-title">방 리스트</h2>
+            <button
+              onClick={() => {
+                void loadRooms().catch((err: Error) => {
+                  setStatus({ ok: false, text: "방 목록 조회 실패: " + err.message });
+                });
+              }}
+              disabled={!isAuthenticated || busyLobby.rooms}
+            >
+              {busyLobby.rooms ? "조회 중..." : "새로고침"}
+            </button>
+          </div>
+
+          {!isAuthenticated ? (
+            <p className="hint-text">로그인 후 방 목록을 확인할 수 있습니다.</p>
+          ) : (
+            <>
+              <div className="room-list" role="listbox" aria-label="room-list">
+                {rooms.map((room) => (
+                  <button
+                    key={room.roomId}
+                    className={"room-item" + (selectedRoomId === room.roomId ? " active" : "")}
+                    onClick={() => {
+                      void selectRoom(room.roomId).catch((err: Error) => {
+                        setStatus({ ok: false, text: "방 사용자 조회 실패: " + err.message });
+                      });
+                    }}
+                  >
+                    <span>{room.name}</span>
+                    <small>{room.roomId}</small>
+                  </button>
+                ))}
+              </div>
+
+              <div className="room-users">
+                <div className="room-users-head">
+                  <strong>사용자 목록</strong>
+                  <span>{busyLobby.users ? "불러오는 중..." : roomUsers.length + "명"}</span>
+                </div>
+                <ul>
+                  {roomUsers.map((u) => (
+                    <li key={u.userId}>{u.displayName} ({u.userId})</li>
+                  ))}
+                </ul>
+              </div>
+
+              <button
+                className="join-room-button"
+                disabled={!selectedRoomId || busy.join}
+                onClick={() => {
+                  void join().catch((err: Error) => {
+                    setStatus({ ok: false, text: "Join failed: " + err.message });
+                    alert(err.message);
+                  });
+                }}
+              >
+                {busy.join ? "참여 중..." : "참여 (Join)"}
+              </button>
+            </>
+          )}
+          </div>
+        </section>
+      )}
+
+      {isAuthenticated && (
+        <>
+          <Controls
+            roomId={roomId}
+            userId={userId}
+            busyJoin={busy.join}
+            lockUserId={true}
+            setRoomId={setRoomId}
+            setUserId={setUserId}
+            onJoin={() => {
+              void join().catch((err: Error) => {
+                setStatus({ ok: false, text: "Join failed: " + err.message });
+                alert(err.message);
+              });
+            }}
+            onLeave={() => {
+              void leave().catch((err: Error) => {
+                setStatus({ ok: false, text: "Leave failed: " + err.message });
+                alert(err.message);
+              });
+            }}
+          />
+          <MessageList
+            messages={messages}
+            participantCount={participantCount}
+            localUserId={localUserIdRef.current}
+            readReceipts={readReceipts}
+            quickEmojis={QUICK_EMOJIS}
+            chatBoxRef={chatBoxRef}
+            listEndRef={listEndRef}
+            onToggleReaction={(sequence, emoji) => {
+              void toggleReaction(sequence, emoji).catch(console.error);
+            }}
+          />
+          <Composer
+            message={message}
+            typingText={typingText}
+            busySend={busy.send}
+            setMessageValue={onMessageChange}
+            onSend={() => {
+              void send().catch((err: Error) => {
+                setStatus({ ok: false, text: "Send failed: " + err.message });
+                alert(err.message);
+              });
+            }}
+            onRefresh={() => {
+              void refresh({ source: "manual" }).catch((err: Error) => {
+                setStatus({ ok: false, text: "Refresh failed: " + err.message });
+                alert(err.message);
+              });
+            }}
+            onSendFile={(file) => {
+              void sendFile(file).catch((err: Error) => {
+                setStatus({ ok: false, text: "File send failed: " + err.message });
+                alert(err.message);
+              });
+            }}
+          />
+        </>
+      )}
     </main>
   );
 }

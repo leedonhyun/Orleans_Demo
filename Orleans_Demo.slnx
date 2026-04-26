@@ -2,4 +2,5 @@
   <Project Path="GrainImplement/GrainImplement.csproj" />
   <Project Path="GrainInterfaces/GrainInterfaces.csproj" />
   <Project Path="Orleans_Demo/Orleans_Demo.csproj" />
+  <Project Path="YARP/YARP.csproj" />
 </Solution>
