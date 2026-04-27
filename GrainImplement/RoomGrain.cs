@@ -30,25 +30,37 @@ public class RoomGrain : Grain, IRoomGrain
 
     public async Task Join(string playerId)
     {
-        if (_state.State.Players.Add(playerId))
+        var normalizedPlayerId = playerId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedPlayerId))
+        {
+            return;
+        }
+
+        if (_state.State.Players.Add(normalizedPlayerId))
         {
             await _state.WriteStateAsync();
-            Console.WriteLine($"[Room:{this.GetPrimaryKeyString()}] {playerId} joined");
+            Console.WriteLine($"[Room:{this.GetPrimaryKeyString()}] {normalizedPlayerId} joined");
         }
     }
 
     public async Task Leave(string playerId)
     {
+        var normalizedPlayerId = playerId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedPlayerId))
+        {
+            return;
+        }
+
         var changed = false;
 
-        if (_state.State.Players.Remove(playerId))
+        if (_state.State.Players.Remove(normalizedPlayerId))
         {
             changed = true;
-            Console.WriteLine($"[Room:{this.GetPrimaryKeyString()}] {playerId} left");
+            Console.WriteLine($"[Room:{this.GetPrimaryKeyString()}] {normalizedPlayerId} left");
         }
 
         // Keep read receipts aligned with active participants.
-        if (_state.State.ReadReceiptsByUser.Remove(playerId))
+        if (_state.State.ReadReceiptsByUser.Remove(normalizedPlayerId))
         {
             changed = true;
         }
@@ -165,17 +177,23 @@ public class RoomGrain : Grain, IRoomGrain
 
     public async Task MarkRead(string userId, long sequence)
     {
-        if (string.IsNullOrWhiteSpace(userId) || sequence <= 0)
+        var normalizedUserId = userId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedUserId) || sequence <= 0)
         {
             return;
         }
 
-        if (_state.State.ReadReceiptsByUser.TryGetValue(userId, out var existing) && existing >= sequence)
+        if (!_state.State.Players.Contains(normalizedUserId))
         {
             return;
         }
 
-        _state.State.ReadReceiptsByUser[userId] = sequence;
+        if (_state.State.ReadReceiptsByUser.TryGetValue(normalizedUserId, out var existing) && existing >= sequence)
+        {
+            return;
+        }
+
+        _state.State.ReadReceiptsByUser[normalizedUserId] = sequence;
         await _state.WriteStateAsync();
     }
 
@@ -199,6 +217,11 @@ public class RoomGrain : Grain, IRoomGrain
         var normalizedUserId = userId?.Trim() ?? string.Empty;
 
         if (string.IsNullOrWhiteSpace(normalizedEmoji) || string.IsNullOrWhiteSpace(normalizedUserId))
+        {
+            return message.Reactions.Select(CloneReaction).ToArray();
+        }
+
+        if (!_state.State.Players.Contains(normalizedUserId))
         {
             return message.Reactions.Select(CloneReaction).ToArray();
         }

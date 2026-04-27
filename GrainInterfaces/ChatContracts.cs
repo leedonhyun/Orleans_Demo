@@ -57,6 +57,16 @@ public interface IRoomGrain : IGrainWithStringKey
     Task<IReadOnlyList<ChatReaction>> ToggleReaction(long sequence, string emoji, string userId);
 }
 
+public interface IChatNotifierGrain : IGrainWithStringKey
+{
+    Task NotifyParticipantChanged(string roomId, int participants);
+    Task NotifyChatMessageReceived(string roomId, ChatMessage message);
+    Task NotifyMessageAck(string roomId, string userId, string clientMessageId, long sequence);
+    Task NotifyReactionUpdated(string roomId, long sequence, IReadOnlyList<ChatReaction> reactions);
+    Task NotifyTypingChanged(string roomId, string userId, bool isTyping);
+    Task NotifyMessageRead(string roomId, string userId, long sequence);
+}
+
 [GenerateSerializer]
 public sealed class UserSessionInfo
 {

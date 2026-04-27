@@ -38,6 +38,7 @@ public class ChatHub : Hub
         // This closes a race where API join happens before hub join and stale-prune removed the user.
         var player = _client.GetGrain<IPlayerGrain>(normalizedUserId);
         await player.JoinRoom(normalizedRoomId);
+        var changedRoom = !string.Equals(previous.RoomId, normalizedRoomId, StringComparison.Ordinal);
 
         if (!string.IsNullOrWhiteSpace(previous.ConnectionId) && previous.ConnectionId != Context.ConnectionId)
         {
@@ -66,6 +67,13 @@ public class ChatHub : Hub
                 normalizedUserId,
                 Context.ConnectionId);
         }
+
+        if (changedRoom && !string.IsNullOrWhiteSpace(previous.RoomId))
+        {
+            await NotifyParticipantChanged(previous.RoomId);
+        }
+
+        await NotifyParticipantChanged(normalizedRoomId);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -88,10 +96,7 @@ public class ChatHub : Hub
                     {
                         var player = _client.GetGrain<IPlayerGrain>(userId);
                         await player.LeaveRoom();
-
-                        var room = _client.GetGrain<IRoomGrain>(current.RoomId);
-                        var participants = await room.GetParticipantCount();
-                        await Clients.Group(current.RoomId).SendAsync("ParticipantChanged", new { roomId = current.RoomId, participants });
+                        await NotifyParticipantChanged(current.RoomId);
                     }
 
                     await sessionGrain.DeactivateIfMatch(Context.ConnectionId);
@@ -111,9 +116,31 @@ public class ChatHub : Hub
         await base.OnDisconnectedAsync(exception);
     }
 
-    public Task LeaveRoom(string roomId)
+    public async Task LeaveRoom(string roomId)
     {
-        return Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId);
+        var normalizedRoomId = roomId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedRoomId))
+        {
+            return;
+        }
+
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, normalizedRoomId);
+
+        var connectionSession = _client.GetGrain<IConnectionSessionGrain>(Context.ConnectionId);
+        var session = await connectionSession.GetCurrent();
+        if (string.IsNullOrWhiteSpace(session.UserId))
+        {
+            return;
+        }
+
+        var player = _client.GetGrain<IPlayerGrain>(session.UserId);
+        await player.LeaveRoom();
+
+        var userSession = _client.GetGrain<IUserSessionGrain>(session.UserId);
+        await userSession.Activate(Context.ConnectionId, string.Empty);
+        await connectionSession.Upsert(session.UserId, string.Empty);
+
+        await NotifyParticipantChanged(normalizedRoomId);
     }
 
     public Task NotifyTyping(string roomId, string userId, bool isTyping)
@@ -133,12 +160,8 @@ public class ChatHub : Hub
             return;
         }
 
-        await Clients.OthersInGroup(roomId).SendAsync("TypingChanged", new
-        {
-            roomId,
-            userId,
-            isTyping
-        });
+        var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
+        await notifier.NotifyTypingChanged(roomId, userId, isTyping);
     }
 
     public async Task NotifyRead(string roomId, string userId, long sequence)
@@ -155,13 +178,8 @@ public class ChatHub : Hub
 
         var room = _client.GetGrain<IRoomGrain>(roomId);
         await room.MarkRead(userId, sequence);
-
-        await Clients.Group(roomId).SendAsync("MessageRead", new
-        {
-            roomId,
-            userId,
-            sequence
-        });
+        var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
+        await notifier.NotifyMessageRead(roomId, userId, sequence);
     }
 
     private async Task<bool> IsActiveSession(string userId)
@@ -211,7 +229,7 @@ public class ChatHub : Hub
     {
         try
         {
-            // Redis backplane can occasionally timeout for stale connections.
+            // Group cleanup can occasionally timeout for stale/disconnected connections.
             // Do not block JoinRoom on group-cleanup; give it a short budget.
             var removeTask = Groups.RemoveFromGroupAsync(connectionId, roomId);
             var completed = await Task.WhenAny(removeTask, Task.Delay(TimeSpan.FromMilliseconds(800)));
@@ -239,5 +257,18 @@ public class ChatHub : Hub
                 roomId,
                 connectionId);
         }
+    }
+
+    private async Task NotifyParticipantChanged(string roomId)
+    {
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            return;
+        }
+
+        var room = _client.GetGrain<IRoomGrain>(roomId);
+        var participants = await room.GetParticipantCount();
+        var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
+        await notifier.NotifyParticipantChanged(roomId, participants);
     }
 }

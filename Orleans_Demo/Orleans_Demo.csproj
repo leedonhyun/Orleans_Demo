@@ -10,9 +10,10 @@
     <PackageReference Include="Interflare.Orleans.Marten.Clustering" Version="0.0.7" />
     <PackageReference Include="Interflare.Orleans.Marten.Persistence" Version="0.0.7" />
     <PackageReference Include="Interflare.Orleans.Marten.Reminders" Version="0.0.7" />
+    <PackageReference Include="ManagedCode.Orleans.SignalR.Client" Version="10.1.0" />
+    <PackageReference Include="ManagedCode.Orleans.SignalR.Server" Version="10.1.0" />
     <PackageReference Include="Marten" Version="8.32.0" />
     <PackageReference Include="Marten.AspNetCore" Version="8.32.0" />
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.0" />
     <PackageReference Include="Microsoft.Orleans.Clustering.Redis" Version="10.1.0" />
     <PackageReference Include="Microsoft.Orleans.CodeGenerator" Version="10.1.0">
@@ -21,6 +22,7 @@
     </PackageReference>
     <PackageReference Include="Microsoft.Orleans.Core" Version="10.1.0" />
     <PackageReference Include="Microsoft.Orleans.Core.Abstractions" Version="10.1.0" />
+    <PackageReference Include="Microsoft.Orleans.Persistence.Redis" Version="10.1.0" />
     <PackageReference Include="Microsoft.Orleans.Reminders" Version="10.1.0" />
     <PackageReference Include="Microsoft.Orleans.Reminders.Redis" Version="10.1.0" />
     <PackageReference Include="Microsoft.Orleans.Sdk" Version="10.1.0" />

@@ -738,11 +738,6 @@ export default function App() {
       localUserIdRef.current = nextUserId;
       lastReadSentSequenceRef.current = 0;
 
-      await withTimeout(
-        callApi("/api/chat/" + encodeURIComponent(nextRoomId) + "/join", "POST", { userId: nextUserId }),
-        JOIN_STEP_TIMEOUT_MS,
-        "Join API"
-      );
       await withTimeout(ensureHubConnection(), JOIN_STEP_TIMEOUT_MS, "SignalR connect");
 
       const hub = hubConnectionRef.current;
@@ -751,10 +746,18 @@ export default function App() {
       }
 
       if (connectedRoomIdRef.current && connectedRoomIdRef.current !== nextRoomId) {
-        await hub.invoke("LeaveRoom", connectedRoomIdRef.current);
+        await withTimeout(
+          hub.invoke("LeaveRoom", connectedRoomIdRef.current),
+          JOIN_STEP_TIMEOUT_MS,
+          "Leave previous room"
+        );
       }
 
-      await hub.invoke("JoinRoom", nextRoomId, nextUserId);
+      await withTimeout(
+        hub.invoke("JoinRoom", nextRoomId, nextUserId),
+        JOIN_STEP_TIMEOUT_MS,
+        "Join room"
+      );
       setConnectedRoomId(nextRoomId);
       setIsJoined(true);
       connectedRoomIdRef.current = nextRoomId;
@@ -787,12 +790,22 @@ export default function App() {
       return;
     }
 
-    await callApi("/api/chat/" + encodeURIComponent(nextRoomId) + "/leave", "POST", { userId: nextUserId });
     await notifyTyping(false);
 
     const hub = hubConnectionRef.current;
+    let leftByHub = false;
     if (hub && hub.state === "Connected" && connectedRoomIdRef.current === nextRoomId) {
-      await hub.invoke("LeaveRoom", nextRoomId);
+      try {
+        await hub.invoke("LeaveRoom", nextRoomId);
+        leftByHub = true;
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // Fallback for disconnected/unavailable hub sessions.
+    if (!leftByHub) {
+      await callApi("/api/chat/" + encodeURIComponent(nextRoomId) + "/leave", "POST", { userId: nextUserId });
     }
 
     setDisconnected("Disconnected");
@@ -1188,7 +1201,7 @@ export default function App() {
             <p className="hint-text">로그인 후 방 목록을 확인할 수 있습니다.</p>
           ) : (
             <>
-              <div className="room-list" role="listbox" aria-label="room-list">
+              <div className="room-list" aria-label="room-list">
                 {rooms.map((room) => (
                   <button
                     key={room.roomId}

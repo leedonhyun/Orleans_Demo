@@ -16,6 +16,8 @@ using System.Text.Json;
 
 using System.Net;
 using Microsoft.AspNetCore.Http;
+using ManagedCode.Orleans.SignalR.Core.Config;
+using ManagedCode.Orleans.SignalR.Server.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -73,6 +75,14 @@ builder.Host.UseOrleans(siloBuilder =>
     // Force load grain implementation assembly so Orleans can discover grain types.
     _ = typeof(PlayerGrain).Assembly;
 
+    var signalRRedisConnectionString = builder.Configuration.GetValue<string>("SignalR:Redis:ConnectionString")
+        ?? "localhost:6379,abortConnect=false";
+
+    siloBuilder.ConfigureOrleansSignalR();
+    siloBuilder.AddRedisGrainStorage(OrleansSignalROptions.OrleansSignalRStorage, options =>
+    {
+        options.ConfigurationOptions = ConfigurationOptions.Parse(signalRRedisConnectionString, true);
+    });
     // Interflare.Orleans.Marten.Clustering:
     siloBuilder.UseMartenClustering();
 
@@ -95,7 +105,9 @@ builder.Host.UseOrleans(siloBuilder =>
 // see: https://martendb.io/configuration/hostbuilder.html
 builder.Services.AddMarten(options =>
 {
-    options.Connection(builder.Configuration.GetConnectionString("MyDatabase"));
+    var connectionString = builder.Configuration.GetConnectionString("MyDatabase")
+        ?? throw new InvalidOperationException("ConnectionStrings:MyDatabase is missing.");
+    options.Connection(connectionString);
     options.DatabaseSchemaName = "incidents";
     options.Schema.For<UserCredentialDocument>();
     options.Schema.For<RoomDocument>();
@@ -103,11 +115,12 @@ builder.Services.AddMarten(options =>
     //    options.Schema.For<MyDocument1>();
     //    options.Schema.For<MyDocument2>();
 });
-const string forcedRedisConnectionString = "localhost:6379,abortConnect=false";
+var redisConnectionString = builder.Configuration.GetValue<string>("SignalR:Redis:ConnectionString")
+    ?? "localhost:6379,abortConnect=false";
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    var redisOptions = ConfigurationOptions.Parse(forcedRedisConnectionString, true);
+    var redisOptions = ConfigurationOptions.Parse(redisConnectionString, true);
     redisOptions.AbortOnConnectFail = false;
     redisOptions.ConnectRetry = Math.Max(redisOptions.ConnectRetry, 5);
     redisOptions.ConnectTimeout = Math.Max(redisOptions.ConnectTimeout, 10000);
@@ -124,16 +137,15 @@ builder.Services.AddSession(options =>
     options.Cookie.IsEssential = true;
     options.IdleTimeout = TimeSpan.FromHours(8);
 });
-var signalRBuilder = builder.Services.AddSignalR();
-
-signalRBuilder.AddStackExchangeRedis(forcedRedisConnectionString, options =>
+builder.Services.AddSignalR().AddOrleans(options =>
 {
-    var redisOptions = ConfigurationOptions.Parse(forcedRedisConnectionString, true);
-    redisOptions.AbortOnConnectFail = false;
-    redisOptions.ConnectRetry = Math.Max(redisOptions.ConnectRetry, 5);
-    redisOptions.ConnectTimeout = Math.Max(redisOptions.ConnectTimeout, 10000);
-    redisOptions.SyncTimeout = Math.Max(redisOptions.SyncTimeout, 10000);
-    options.Configuration = redisOptions;
+    options.ConnectionPartitionCount = builder.Configuration.GetValue<uint>("SignalR:Orleans:ConnectionPartitionCount", 4);
+    options.GroupPartitionCount = builder.Configuration.GetValue<uint>("SignalR:Orleans:GroupPartitionCount", 4);
+    options.ConnectionsPerPartitionHint = builder.Configuration.GetValue<int>("SignalR:Orleans:ConnectionsPerPartitionHint", 10000);
+    options.GroupsPerPartitionHint = builder.Configuration.GetValue<int>("SignalR:Orleans:GroupsPerPartitionHint", 1000);
+    options.KeepEachConnectionAlive = builder.Configuration.GetValue<bool>("SignalR:Orleans:KeepEachConnectionAlive", true);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(builder.Configuration.GetValue<int>("SignalR:Orleans:ClientTimeoutIntervalSeconds", 30));
+    options.KeepMessageInterval = TimeSpan.FromSeconds(builder.Configuration.GetValue<int>("SignalR:Orleans:KeepMessageIntervalSeconds", 66));
 });
 
 var app = builder.Build();
@@ -160,6 +172,11 @@ static (bool HasSession, bool IsMatch, string SessionUserId) GetSessionAuthStatu
     return (true, string.Equals(sessionUserId, normalizedUserId, StringComparison.Ordinal), sessionUserId);
 }
 
+static IChatNotifierGrain GetChatNotifier(IClusterClient client, string roomId)
+{
+    return client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
+}
+
 var allowedUploadExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
@@ -170,7 +187,7 @@ var allowedUploadExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCa
 
 const long maxUploadBytes = 15 * 1024 * 1024;
 
-app.MapPost("/api/chat/{roomId}/join", async (string roomId, ChatJoinRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+app.MapPost("/api/chat/{roomId}/join", async (string roomId, ChatJoinRequest request, IClusterClient client) =>
 {
     var userId = request.UserId?.Trim();
     if (string.IsNullOrWhiteSpace(userId))
@@ -181,14 +198,10 @@ app.MapPost("/api/chat/{roomId}/join", async (string roomId, ChatJoinRequest req
     var player = client.GetGrain<IPlayerGrain>(userId);
     await player.JoinRoom(roomId);
 
-    var room = client.GetGrain<IRoomGrain>(roomId);
-    var participants = await room.GetParticipantCount();
-    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
-
     return Results.Ok(new { roomId, userId });
 });
 
-app.MapPost("/api/chat/{roomId}/leave", async (string roomId, ChatLeaveRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+app.MapPost("/api/chat/{roomId}/leave", async (string roomId, ChatLeaveRequest request, IClusterClient client) =>
 {
     var userId = request.UserId?.Trim();
     if (string.IsNullOrWhiteSpace(userId))
@@ -201,12 +214,13 @@ app.MapPost("/api/chat/{roomId}/leave", async (string roomId, ChatLeaveRequest r
 
     var room = client.GetGrain<IRoomGrain>(roomId);
     var participants = await room.GetParticipantCount();
-    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
+    var notifier = GetChatNotifier(client, roomId);
+    await notifier.NotifyParticipantChanged(roomId, participants);
 
     return Results.Ok(new { roomId, userId });
 });
 
-app.MapPost("/api/chat/{roomId}/leave-keepalive", async (string roomId, string userId, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+app.MapPost("/api/chat/{roomId}/leave-keepalive", async (string roomId, string userId, IClusterClient client) =>
 {
     var resolvedUserId = userId?.Trim();
     if (string.IsNullOrWhiteSpace(resolvedUserId))
@@ -219,12 +233,13 @@ app.MapPost("/api/chat/{roomId}/leave-keepalive", async (string roomId, string u
 
     var room = client.GetGrain<IRoomGrain>(roomId);
     var participants = await room.GetParticipantCount();
-    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
+    var notifier = GetChatNotifier(client, roomId);
+    await notifier.NotifyParticipantChanged(roomId, participants);
 
     return Results.Ok(new { roomId, userId = resolvedUserId });
 });
 
-app.MapPost("/api/chat/{roomId}/message", async (HttpContext httpContext, string roomId, ChatSendRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+app.MapPost("/api/chat/{roomId}/message", async (HttpContext httpContext, string roomId, ChatSendRequest request, IClusterClient client) =>
 {
     var userId = request.UserId?.Trim();
     var message = request.Message?.Trim();
@@ -252,24 +267,15 @@ app.MapPost("/api/chat/{roomId}/message", async (HttpContext httpContext, string
     await player.JoinRoom(roomId);
 
     var room = client.GetGrain<IRoomGrain>(roomId);
+    var notifier = GetChatNotifier(client, roomId);
     var savedMessage = await room.SendChat(effectiveUserId, message, clientMessageId);
-    await hubContext.Clients.Group(roomId).SendAsync("ChatMessageReceived", savedMessage);
-
-    await hubContext.Clients.Group(roomId).SendAsync("MessageAck", new
-    {
-        roomId,
-        userId = effectiveUserId,
-        clientMessageId = savedMessage.ClientMessageId,
-        sequence = savedMessage.Sequence
-    });
-
-    var participants = await room.GetParticipantCount();
-    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
+    await notifier.NotifyChatMessageReceived(roomId, savedMessage);
+    await notifier.NotifyMessageAck(roomId, effectiveUserId, savedMessage.ClientMessageId, savedMessage.Sequence);
 
     return Results.Ok(new { roomId, userId = effectiveUserId, sequence = savedMessage.Sequence, clientMessageId = savedMessage.ClientMessageId });
 });
 
-app.MapPost("/api/chat/{roomId}/file", async (HttpContext httpContext, HttpRequest request, string roomId, IClusterClient client, IHubContext<ChatHub> hubContext, IWebHostEnvironment env) =>
+app.MapPost("/api/chat/{roomId}/file", async (HttpContext httpContext, HttpRequest request, string roomId, IClusterClient client, IWebHostEnvironment env) =>
 {
     if (!request.HasFormContentType)
     {
@@ -341,19 +347,10 @@ app.MapPost("/api/chat/{roomId}/file", async (HttpContext httpContext, HttpReque
     await player.JoinRoom(roomId);
 
     var room = client.GetGrain<IRoomGrain>(roomId);
+    var notifier = GetChatNotifier(client, roomId);
     var savedMessage = await room.SendChat(effectiveUserId, message, string.IsNullOrWhiteSpace(clientMessageId) ? null : clientMessageId);
-    await hubContext.Clients.Group(roomId).SendAsync("ChatMessageReceived", savedMessage);
-
-    await hubContext.Clients.Group(roomId).SendAsync("MessageAck", new
-    {
-        roomId,
-        userId = effectiveUserId,
-        clientMessageId = savedMessage.ClientMessageId,
-        sequence = savedMessage.Sequence
-    });
-
-    var participants = await room.GetParticipantCount();
-    await hubContext.Clients.Group(roomId).SendAsync("ParticipantChanged", new { roomId, participants });
+    await notifier.NotifyChatMessageReceived(roomId, savedMessage);
+    await notifier.NotifyMessageAck(roomId, effectiveUserId, savedMessage.ClientMessageId, savedMessage.Sequence);
 
     return Results.Ok(new
     {
@@ -396,7 +393,7 @@ app.MapGet("/api/chat/file/{fileName}", (string fileName, IWebHostEnvironment en
     return Results.File(fullPath, contentType, enableRangeProcessing: true);
 });
 
-var reactHandler = async (string roomId, ChatReactionRequest request, IClusterClient client, IHubContext<ChatHub> hubContext) =>
+var reactHandler = async (string roomId, ChatReactionRequest request, IClusterClient client) =>
 {
     var userId = request.UserId?.Trim();
     var emoji = request.Emoji?.Trim();
@@ -417,14 +414,9 @@ var reactHandler = async (string roomId, ChatReactionRequest request, IClusterCl
     }
 
     var room = client.GetGrain<IRoomGrain>(roomId);
+    var notifier = GetChatNotifier(client, roomId);
     var reactions = await room.ToggleReaction(request.Sequence, emoji, userId);
-
-    await hubContext.Clients.Group(roomId).SendAsync("ReactionUpdated", new
-    {
-        roomId,
-        sequence = request.Sequence,
-        reactions
-    });
+    await notifier.NotifyReactionUpdated(roomId, request.Sequence, reactions);
 
     return Results.Ok(new { roomId, sequence = request.Sequence, reactions });
 };

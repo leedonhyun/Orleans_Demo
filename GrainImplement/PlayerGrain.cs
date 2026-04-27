@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace GrainImplement;
 
@@ -9,7 +7,7 @@ using GrainInterfaces;
 using Orleans;
 public class PlayerState
 {
-    public string CurrentRoomId { get; set; }
+    public string? CurrentRoomId { get; set; }
     public int Level { get; set; } = 1;
     public int Exp { get; set; } = 0;
 }
@@ -25,28 +23,35 @@ public class PlayerGrain : Grain, IPlayerGrain
 
     public async Task JoinRoom(string roomId)
     {
+        var normalizedRoomId = roomId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedRoomId))
+        {
+            return;
+        }
+
         var playerId = this.GetPrimaryKeyString();
+        var currentRoomId = _state.State.CurrentRoomId;
 
         // 1) 이미 같은 방이면 무시
-        if (_state.State.CurrentRoomId == roomId)
+        if (string.Equals(currentRoomId, normalizedRoomId, StringComparison.Ordinal))
             return;
 
         // 2) 이전 방에서 나가기
-        if (!string.IsNullOrEmpty(_state.State.CurrentRoomId))
+        if (!string.IsNullOrEmpty(currentRoomId))
         {
-            var oldRoom = GrainFactory.GetGrain<IRoomGrain>(_state.State.CurrentRoomId);
+            var oldRoom = GrainFactory.GetGrain<IRoomGrain>(currentRoomId);
             await oldRoom.Leave(playerId);
         }
 
         // 3) 새 방에 입장
-        var newRoom = GrainFactory.GetGrain<IRoomGrain>(roomId);
+        var newRoom = GrainFactory.GetGrain<IRoomGrain>(normalizedRoomId);
         await newRoom.Join(playerId);
 
         // 4) 상태 업데이트 + 저장
-        _state.State.CurrentRoomId = roomId;
+        _state.State.CurrentRoomId = normalizedRoomId;
         await _state.WriteStateAsync();
 
-        Console.WriteLine($"[Player:{playerId}] joined room {roomId}");
+        Console.WriteLine($"[Player:{playerId}] joined room {normalizedRoomId}");
     }
 
     public async Task LeaveRoom()
@@ -59,7 +64,7 @@ public class PlayerGrain : Grain, IPlayerGrain
         var room = GrainFactory.GetGrain<IRoomGrain>(_state.State.CurrentRoomId);
         await room.Leave(playerId);
 
-        _state.State.CurrentRoomId = null;
+        _state.State.CurrentRoomId = string.Empty;
         await _state.WriteStateAsync();
     }
 
