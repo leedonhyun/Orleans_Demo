@@ -21,12 +21,16 @@ public class PlayerGrain : Grain, IPlayerGrain
         _state = state;
     }
 
-    public async Task JoinRoom(string roomId)
+    public async Task<PlayerRoomTransition> JoinRoom(string roomId)
     {
         var normalizedRoomId = roomId?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(normalizedRoomId))
         {
-            return;
+            return new PlayerRoomTransition
+            {
+                Changed = false,
+                CurrentRoomId = _state.State.CurrentRoomId ?? string.Empty
+            };
         }
 
         var playerId = this.GetPrimaryKeyString();
@@ -34,38 +38,73 @@ public class PlayerGrain : Grain, IPlayerGrain
 
         // 1) 이미 같은 방이면 무시
         if (string.Equals(currentRoomId, normalizedRoomId, StringComparison.Ordinal))
-            return;
+        {
+            var room = GrainFactory.GetGrain<IRoomGrain>(normalizedRoomId);
+            var participants = await room.GetParticipantCount();
+            return new PlayerRoomTransition
+            {
+                Changed = false,
+                CurrentRoomId = normalizedRoomId,
+                CurrentRoomParticipants = participants
+            };
+        }
+
+        var previousRoomParticipants = 0;
 
         // 2) 이전 방에서 나가기
         if (!string.IsNullOrEmpty(currentRoomId))
         {
             var oldRoom = GrainFactory.GetGrain<IRoomGrain>(currentRoomId);
-            await oldRoom.Leave(playerId);
+            previousRoomParticipants = await oldRoom.Leave(playerId);
         }
 
         // 3) 새 방에 입장
         var newRoom = GrainFactory.GetGrain<IRoomGrain>(normalizedRoomId);
-        await newRoom.Join(playerId);
+        var currentRoomParticipants = await newRoom.Join(playerId);
 
         // 4) 상태 업데이트 + 저장
         _state.State.CurrentRoomId = normalizedRoomId;
         await _state.WriteStateAsync();
 
         Console.WriteLine($"[Player:{playerId}] joined room {normalizedRoomId}");
+
+        return new PlayerRoomTransition
+        {
+            Changed = true,
+            PreviousRoomId = currentRoomId ?? string.Empty,
+            PreviousRoomParticipants = previousRoomParticipants,
+            CurrentRoomId = normalizedRoomId,
+            CurrentRoomParticipants = currentRoomParticipants
+        };
     }
 
-    public async Task LeaveRoom()
+    public async Task<PlayerRoomLeaveResult> LeaveRoom()
     {
         var playerId = this.GetPrimaryKeyString();
 
         if (string.IsNullOrEmpty(_state.State.CurrentRoomId))
-            return;
+        {
+            return new PlayerRoomLeaveResult
+            {
+                Changed = false,
+                RoomId = string.Empty,
+                Participants = 0
+            };
+        }
 
-        var room = GrainFactory.GetGrain<IRoomGrain>(_state.State.CurrentRoomId);
-        await room.Leave(playerId);
+        var roomId = _state.State.CurrentRoomId;
+        var room = GrainFactory.GetGrain<IRoomGrain>(roomId);
+        var participants = await room.Leave(playerId);
 
         _state.State.CurrentRoomId = string.Empty;
         await _state.WriteStateAsync();
+
+        return new PlayerRoomLeaveResult
+        {
+            Changed = true,
+            RoomId = roomId,
+            Participants = participants
+        };
     }
 
     public async Task SendInput(string input)

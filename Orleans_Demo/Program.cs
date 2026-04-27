@@ -210,12 +210,12 @@ app.MapPost("/api/chat/{roomId}/leave", async (string roomId, ChatLeaveRequest r
     }
 
     var player = client.GetGrain<IPlayerGrain>(userId);
-    await player.LeaveRoom();
-
-    var room = client.GetGrain<IRoomGrain>(roomId);
-    var participants = await room.GetParticipantCount();
-    var notifier = GetChatNotifier(client, roomId);
-    await notifier.NotifyParticipantChanged(roomId, participants);
+    var leaveResult = await player.LeaveRoom();
+    if (leaveResult.Changed)
+    {
+        var notifier = GetChatNotifier(client, leaveResult.RoomId);
+        await notifier.NotifyParticipantChanged(leaveResult.RoomId, leaveResult.Participants);
+    }
 
     return Results.Ok(new { roomId, userId });
 });
@@ -229,12 +229,12 @@ app.MapPost("/api/chat/{roomId}/leave-keepalive", async (string roomId, string u
     }
 
     var player = client.GetGrain<IPlayerGrain>(resolvedUserId);
-    await player.LeaveRoom();
-
-    var room = client.GetGrain<IRoomGrain>(roomId);
-    var participants = await room.GetParticipantCount();
-    var notifier = GetChatNotifier(client, roomId);
-    await notifier.NotifyParticipantChanged(roomId, participants);
+    var leaveResult = await player.LeaveRoom();
+    if (leaveResult.Changed)
+    {
+        var notifier = GetChatNotifier(client, leaveResult.RoomId);
+        await notifier.NotifyParticipantChanged(leaveResult.RoomId, leaveResult.Participants);
+    }
 
     return Results.Ok(new { roomId, userId = resolvedUserId });
 });

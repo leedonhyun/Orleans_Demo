@@ -30,15 +30,17 @@ public class ChatHub : Hub
         }
 
         var sessionGrain = _client.GetGrain<IUserSessionGrain>(normalizedUserId);
-        var previous = await sessionGrain.Activate(Context.ConnectionId, normalizedRoomId);
+        var previous = await sessionGrain.GetCurrent();
+        await sessionGrain.BindConnection(Context.ConnectionId);
+        _ = await sessionGrain.SetRoomIfConnectionMatch(Context.ConnectionId, normalizedRoomId);
         var connectionSession = _client.GetGrain<IConnectionSessionGrain>(Context.ConnectionId);
         await connectionSession.Upsert(normalizedUserId, normalizedRoomId);
 
         // Keep room participant state aligned with active SignalR session.
         // This closes a race where API join happens before hub join and stale-prune removed the user.
         var player = _client.GetGrain<IPlayerGrain>(normalizedUserId);
-        await player.JoinRoom(normalizedRoomId);
-        var changedRoom = !string.Equals(previous.RoomId, normalizedRoomId, StringComparison.Ordinal);
+        var transition = await player.JoinRoom(normalizedRoomId);
+        var changedRoom = transition.Changed;
 
         if (!string.IsNullOrWhiteSpace(previous.ConnectionId) && previous.ConnectionId != Context.ConnectionId)
         {
@@ -70,10 +72,10 @@ public class ChatHub : Hub
 
         if (changedRoom && !string.IsNullOrWhiteSpace(previous.RoomId))
         {
-            await NotifyParticipantChanged(previous.RoomId);
+            await NotifyParticipantChanged(previous.RoomId, transition.PreviousRoomParticipants);
         }
 
-        await NotifyParticipantChanged(normalizedRoomId);
+        await NotifyParticipantChanged(normalizedRoomId, transition.CurrentRoomParticipants);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -95,11 +97,14 @@ public class ChatHub : Hub
                     if (!string.IsNullOrWhiteSpace(current.RoomId))
                     {
                         var player = _client.GetGrain<IPlayerGrain>(userId);
-                        await player.LeaveRoom();
-                        await NotifyParticipantChanged(current.RoomId);
+                        var leaveResult = await player.LeaveRoom();
+                        if (leaveResult.Changed)
+                        {
+                            await NotifyParticipantChanged(leaveResult.RoomId, leaveResult.Participants);
+                        }
                     }
 
-                    await sessionGrain.DeactivateIfMatch(Context.ConnectionId);
+                    _ = await sessionGrain.ClearIfConnectionMatch(Context.ConnectionId);
                 }
             }
             catch (Exception ex)
@@ -134,13 +139,20 @@ public class ChatHub : Hub
         }
 
         var player = _client.GetGrain<IPlayerGrain>(session.UserId);
-        await player.LeaveRoom();
+        var leaveResult = await player.LeaveRoom();
 
         var userSession = _client.GetGrain<IUserSessionGrain>(session.UserId);
-        await userSession.Activate(Context.ConnectionId, string.Empty);
+        _ = await userSession.SetRoomIfConnectionMatch(Context.ConnectionId, string.Empty);
         await connectionSession.Upsert(session.UserId, string.Empty);
 
-        await NotifyParticipantChanged(normalizedRoomId);
+        if (leaveResult.Changed)
+        {
+            await NotifyParticipantChanged(leaveResult.RoomId, leaveResult.Participants);
+        }
+        else
+        {
+            await NotifyParticipantChanged(normalizedRoomId);
+        }
     }
 
     public Task NotifyTyping(string roomId, string userId, bool isTyping)
@@ -259,16 +271,21 @@ public class ChatHub : Hub
         }
     }
 
-    private async Task NotifyParticipantChanged(string roomId)
+    private async Task NotifyParticipantChanged(string roomId, int? participants = null)
     {
         if (string.IsNullOrWhiteSpace(roomId))
         {
             return;
         }
 
-        var room = _client.GetGrain<IRoomGrain>(roomId);
-        var participants = await room.GetParticipantCount();
+        var resolvedParticipants = participants;
+        if (!resolvedParticipants.HasValue)
+        {
+            var room = _client.GetGrain<IRoomGrain>(roomId);
+            resolvedParticipants = await room.GetParticipantCount();
+        }
+
         var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
-        await notifier.NotifyParticipantChanged(roomId, participants);
+        await notifier.NotifyParticipantChanged(roomId, resolvedParticipants.Value);
     }
 }

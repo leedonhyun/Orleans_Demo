@@ -28,12 +28,12 @@ public class RoomGrain : Grain, IRoomGrain
         _state = state;
     }
 
-    public async Task Join(string playerId)
+    public async Task<int> Join(string playerId)
     {
         var normalizedPlayerId = playerId?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(normalizedPlayerId))
         {
-            return;
+            return _state.State.Players.Count;
         }
 
         if (_state.State.Players.Add(normalizedPlayerId))
@@ -41,14 +41,16 @@ public class RoomGrain : Grain, IRoomGrain
             await _state.WriteStateAsync();
             Console.WriteLine($"[Room:{this.GetPrimaryKeyString()}] {normalizedPlayerId} joined");
         }
+
+        return _state.State.Players.Count;
     }
 
-    public async Task Leave(string playerId)
+    public async Task<int> Leave(string playerId)
     {
         var normalizedPlayerId = playerId?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(normalizedPlayerId))
         {
-            return;
+            return _state.State.Players.Count;
         }
 
         var changed = false;
@@ -70,6 +72,7 @@ public class RoomGrain : Grain, IRoomGrain
             await _state.WriteStateAsync();
         }
 
+        return _state.State.Players.Count;
     }
 
     public override async Task OnDeactivateAsync(DeactivationReason reason, CancellationToken cancellationToken)

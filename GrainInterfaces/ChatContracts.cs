@@ -39,15 +39,47 @@ public sealed class ChatReaction
 
 public interface IPlayerGrain : IGrainWithStringKey
 {
-    Task JoinRoom(string roomId);
-    Task LeaveRoom();
+    Task<PlayerRoomTransition> JoinRoom(string roomId);
+    Task<PlayerRoomLeaveResult> LeaveRoom();
     Task SendInput(string input);
+}
+
+[GenerateSerializer]
+public sealed class PlayerRoomTransition
+{
+    [Id(0)]
+    public bool Changed { get; set; }
+
+    [Id(1)]
+    public string PreviousRoomId { get; set; } = string.Empty;
+
+    [Id(2)]
+    public int PreviousRoomParticipants { get; set; }
+
+    [Id(3)]
+    public string CurrentRoomId { get; set; } = string.Empty;
+
+    [Id(4)]
+    public int CurrentRoomParticipants { get; set; }
+}
+
+[GenerateSerializer]
+public sealed class PlayerRoomLeaveResult
+{
+    [Id(0)]
+    public bool Changed { get; set; }
+
+    [Id(1)]
+    public string RoomId { get; set; } = string.Empty;
+
+    [Id(2)]
+    public int Participants { get; set; }
 }
 
 public interface IRoomGrain : IGrainWithStringKey
 {
-    Task Join(string playerId);
-    Task Leave(string playerId);
+    Task<int> Join(string playerId);
+    Task<int> Leave(string playerId);
     Task Broadcast(string fromPlayerId, string message);
     Task<ChatMessage> SendChat(string fromPlayerId, string message, string? clientMessageId);
     Task<IReadOnlyList<ChatMessage>> GetRecentMessages(int take);
@@ -79,9 +111,10 @@ public sealed class UserSessionInfo
 
 public interface IUserSessionGrain : IGrainWithStringKey
 {
-    Task<UserSessionInfo> Activate(string connectionId, string roomId);
     Task<UserSessionInfo> GetCurrent();
-    Task DeactivateIfMatch(string connectionId);
+    Task BindConnection(string connectionId);
+    Task<bool> SetRoomIfConnectionMatch(string connectionId, string roomId);
+    Task<bool> ClearIfConnectionMatch(string connectionId);
 }
 
 [GenerateSerializer]

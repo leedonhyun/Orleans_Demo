@@ -528,6 +528,27 @@ export default function App() {
         setStatus({ ok: false, text: "Disconnected (SignalR closed)" });
       });
 
+      hub.onreconnecting(() => {
+        setStatus({ ok: false, text: "Reconnecting..." });
+      });
+
+      hub.onreconnected(async () => {
+        const rejoinRoomId = connectedRoomIdRef.current.trim();
+        const rejoinUserId = userIdRef.current.trim();
+        if (!isJoinedRef.current || !rejoinRoomId || !rejoinUserId) {
+          setStatus({ ok: true, text: "Reconnected" });
+          return;
+        }
+
+        try {
+          await hub.invoke("JoinRoom", rejoinRoomId, rejoinUserId);
+          setStatus({ ok: true, text: "Reconnected | room rejoined" });
+        } catch (err) {
+          console.error(err);
+          setStatus({ ok: false, text: "Reconnected, but failed to rejoin room" });
+        }
+      });
+
       hubConnectionRef.current = hub;
     }
 

@@ -9,20 +9,6 @@ public class UserSessionGrain : Grain, IUserSessionGrain
     private string _connectionId = string.Empty;
     private string _roomId = string.Empty;
 
-    public Task<UserSessionInfo> Activate(string connectionId, string roomId)
-    {
-        var previous = new UserSessionInfo
-        {
-            ConnectionId = _connectionId,
-            RoomId = _roomId
-        };
-
-        _connectionId = connectionId?.Trim() ?? string.Empty;
-        _roomId = roomId?.Trim() ?? string.Empty;
-
-        return Task.FromResult(previous);
-    }
-
     public Task<UserSessionInfo> GetCurrent()
     {
         return Task.FromResult(new UserSessionInfo
@@ -32,14 +18,35 @@ public class UserSessionGrain : Grain, IUserSessionGrain
         });
     }
 
-    public Task DeactivateIfMatch(string connectionId)
+    public Task BindConnection(string connectionId)
     {
-        if (!string.IsNullOrWhiteSpace(connectionId) && string.Equals(_connectionId, connectionId, StringComparison.Ordinal))
+        _connectionId = connectionId?.Trim() ?? string.Empty;
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> SetRoomIfConnectionMatch(string connectionId, string roomId)
+    {
+        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_connectionId, normalizedConnectionId, StringComparison.Ordinal))
         {
-            _connectionId = string.Empty;
-            _roomId = string.Empty;
+            return Task.FromResult(false);
         }
 
-        return Task.CompletedTask;
+        _roomId = roomId?.Trim() ?? string.Empty;
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> ClearIfConnectionMatch(string connectionId)
+    {
+        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_connectionId, normalizedConnectionId, StringComparison.Ordinal))
+        {
+            return Task.FromResult(false);
+        }
+
+        _connectionId = string.Empty;
+        _roomId = string.Empty;
+
+        return Task.FromResult(true);
     }
 }
