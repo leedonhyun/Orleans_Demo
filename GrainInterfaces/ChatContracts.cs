@@ -84,7 +84,7 @@ public interface IRoomGrain : IGrainWithStringKey
     Task<ChatMessage> SendChat(string fromPlayerId, string message, string? clientMessageId);
     Task<IReadOnlyList<ChatMessage>> GetRecentMessages(int take);
     Task<int> GetParticipantCount();
-    Task MarkRead(string userId, long sequence);
+    Task<bool> MarkRead(string userId, long sequence);
     Task<IReadOnlyDictionary<string, long>> GetReadReceipts();
     Task<IReadOnlyList<ChatReaction>> ToggleReaction(long sequence, string emoji, string userId);
 }
@@ -125,12 +125,16 @@ public sealed class ConnectionSessionInfo
 
     [Id(1)]
     public string RoomId { get; set; } = string.Empty;
+
+    [Id(2)]
+    public bool IsTyping { get; set; }
 }
 
 public interface IConnectionSessionGrain : IGrainWithStringKey
 {
     Task Upsert(string userId, string roomId);
     Task<ConnectionSessionInfo> GetCurrent();
+    Task<bool> SetTypingState(bool isTyping);
     Task Clear();
 }
 

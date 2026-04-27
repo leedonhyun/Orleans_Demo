@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.Http;
 using Orleans;
 
 using GrainInterfaces;
@@ -23,11 +24,23 @@ public class ChatHub : Hub
     public async Task JoinRoom(string roomId, string userId)
     {
         var normalizedRoomId = roomId?.Trim() ?? string.Empty;
-        var normalizedUserId = userId?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(normalizedRoomId) || string.IsNullOrWhiteSpace(normalizedUserId))
+        if (string.IsNullOrWhiteSpace(normalizedRoomId))
         {
             return;
         }
+
+        if (!TryResolveAuthorizedUserId(userId, out var normalizedUserId))
+        {
+            _logger.LogWarning("JoinRoom denied: missing or invalid session. connectionId={ConnectionId}, requestedUserId={RequestedUserId}",
+                Context.ConnectionId,
+                userId);
+            return;
+        }
+
+        _logger.LogInformation("JoinRoom requested. connectionId={ConnectionId}, userId={UserId}, roomId={RoomId}",
+            Context.ConnectionId,
+            normalizedUserId,
+            normalizedRoomId);
 
         var sessionGrain = _client.GetGrain<IUserSessionGrain>(normalizedUserId);
         var previous = await sessionGrain.GetCurrent();
@@ -76,6 +89,12 @@ public class ChatHub : Hub
         }
 
         await NotifyParticipantChanged(normalizedRoomId, transition.CurrentRoomParticipants);
+
+        _logger.LogInformation("JoinRoom completed. connectionId={ConnectionId}, userId={UserId}, roomId={RoomId}, participants={Participants}",
+            Context.ConnectionId,
+            normalizedUserId,
+            normalizedRoomId,
+            transition.CurrentRoomParticipants);
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -135,6 +154,17 @@ public class ChatHub : Hub
         var session = await connectionSession.GetCurrent();
         if (string.IsNullOrWhiteSpace(session.UserId))
         {
+            _logger.LogWarning("LeaveRoom ignored: no connection session user. connectionId={ConnectionId}, roomId={RoomId}",
+                Context.ConnectionId,
+                normalizedRoomId);
+            return;
+        }
+
+        if (!TryResolveAuthorizedUserId(session.UserId, out var effectiveUserId) || !string.Equals(effectiveUserId, session.UserId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning("LeaveRoom denied: session user mismatch. connectionId={ConnectionId}, connectionUserId={ConnectionUserId}",
+                Context.ConnectionId,
+                session.UserId);
             return;
         }
 
@@ -167,13 +197,28 @@ public class ChatHub : Hub
 
     private async Task NotifyTypingCore(string roomId, string userId, bool isTyping)
     {
-        if (!await IsActiveSession(userId))
+        if (!TryResolveAuthorizedUserId(userId, out var effectiveUserId))
+        {
+            _logger.LogWarning("NotifyTyping denied: invalid session. connectionId={ConnectionId}, requestedUserId={RequestedUserId}",
+                Context.ConnectionId,
+                userId);
+            return;
+        }
+
+        if (!await IsActiveSession(effectiveUserId, roomId))
+        {
+            return;
+        }
+
+        var connectionSession = _client.GetGrain<IConnectionSessionGrain>(Context.ConnectionId);
+        var changed = await connectionSession.SetTypingState(isTyping);
+        if (!changed)
         {
             return;
         }
 
         var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
-        await notifier.NotifyTypingChanged(roomId, userId, isTyping);
+        await notifier.NotifyTypingChanged(roomId, effectiveUserId, isTyping);
     }
 
     public async Task NotifyRead(string roomId, string userId, long sequence)
@@ -183,22 +228,72 @@ public class ChatHub : Hub
             return;
         }
 
-        if (!await IsActiveSession(userId))
+        if (!TryResolveAuthorizedUserId(userId, out var effectiveUserId))
+        {
+            _logger.LogWarning("NotifyRead denied: invalid session. connectionId={ConnectionId}, requestedUserId={RequestedUserId}, roomId={RoomId}, sequence={Sequence}",
+                Context.ConnectionId,
+                userId,
+                roomId,
+                sequence);
+            return;
+        }
+
+        if (!await IsActiveSession(effectiveUserId, roomId))
         {
             return;
         }
 
         var room = _client.GetGrain<IRoomGrain>(roomId);
-        await room.MarkRead(userId, sequence);
+        var changed = await room.MarkRead(effectiveUserId, sequence);
+        if (!changed)
+        {
+            return;
+        }
+
         var notifier = _client.GetGrain<IChatNotifierGrain>($"chat-notifier:{roomId}");
-        await notifier.NotifyMessageRead(roomId, userId, sequence);
+        await notifier.NotifyMessageRead(roomId, effectiveUserId, sequence);
     }
 
-    private async Task<bool> IsActiveSession(string userId)
+    private async Task<bool> IsActiveSession(string userId, string? roomId = null)
     {
         var sessionGrain = _client.GetGrain<IUserSessionGrain>(userId);
         var current = await sessionGrain.GetCurrent();
-        return string.Equals(current.ConnectionId, Context.ConnectionId, StringComparison.Ordinal);
+        if (!string.Equals(current.ConnectionId, Context.ConnectionId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(roomId) && !string.Equals(current.RoomId, roomId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryResolveAuthorizedUserId(string? requestedUserId, out string effectiveUserId)
+    {
+        effectiveUserId = string.Empty;
+
+        var httpContext = Context.GetHttpContext();
+        var sessionUserId = httpContext?.Session.GetString("auth.userId")?.Trim();
+        if (string.IsNullOrWhiteSpace(sessionUserId))
+        {
+            return false;
+        }
+
+        var normalizedRequestedUserId = requestedUserId?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(normalizedRequestedUserId)
+            && !string.Equals(normalizedRequestedUserId, sessionUserId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning("Hub userId overridden by session user. connectionId={ConnectionId}, requestedUserId={RequestedUserId}, sessionUserId={SessionUserId}",
+                Context.ConnectionId,
+                normalizedRequestedUserId,
+                sessionUserId);
+        }
+
+        effectiveUserId = sessionUserId;
+        return true;
     }
 
     private async Task<bool> TryAddToGroupWithRetry(string connectionId, string roomId)

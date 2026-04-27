@@ -178,26 +178,27 @@ public class RoomGrain : Grain, IRoomGrain
         return Task.FromResult(_state.State.Players.Count);
     }
 
-    public async Task MarkRead(string userId, long sequence)
+    public async Task<bool> MarkRead(string userId, long sequence)
     {
         var normalizedUserId = userId?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(normalizedUserId) || sequence <= 0)
         {
-            return;
+            return false;
         }
 
         if (!_state.State.Players.Contains(normalizedUserId))
         {
-            return;
+            return false;
         }
 
         if (_state.State.ReadReceiptsByUser.TryGetValue(normalizedUserId, out var existing) && existing >= sequence)
         {
-            return;
+            return false;
         }
 
         _state.State.ReadReceiptsByUser[normalizedUserId] = sequence;
         await _state.WriteStateAsync();
+        return true;
     }
 
     public Task<IReadOnlyDictionary<string, long>> GetReadReceipts()

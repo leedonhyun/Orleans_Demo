@@ -4,49 +4,78 @@ using GrainInterfaces;
 
 using Orleans;
 
+public class UserSessionState
+{
+    public string ConnectionId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+}
+
 public class UserSessionGrain : Grain, IUserSessionGrain
 {
-    private string _connectionId = string.Empty;
-    private string _roomId = string.Empty;
+    private readonly IPersistentState<UserSessionState> _state;
+
+    public UserSessionGrain([PersistentState("user-session", "Default")] IPersistentState<UserSessionState> state)
+    {
+        _state = state;
+    }
 
     public Task<UserSessionInfo> GetCurrent()
     {
         return Task.FromResult(new UserSessionInfo
         {
-            ConnectionId = _connectionId,
-            RoomId = _roomId
+            ConnectionId = _state.State.ConnectionId,
+            RoomId = _state.State.RoomId
         });
     }
 
-    public Task BindConnection(string connectionId)
+    public async Task BindConnection(string connectionId)
     {
-        _connectionId = connectionId?.Trim() ?? string.Empty;
-        return Task.CompletedTask;
-    }
-
-    public Task<bool> SetRoomIfConnectionMatch(string connectionId, string roomId)
-    {
-        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_connectionId, normalizedConnectionId, StringComparison.Ordinal))
+        var normalized = connectionId?.Trim() ?? string.Empty;
+        if (string.Equals(_state.State.ConnectionId, normalized, StringComparison.Ordinal))
         {
-            return Task.FromResult(false);
+            return;
         }
 
-        _roomId = roomId?.Trim() ?? string.Empty;
-        return Task.FromResult(true);
+        _state.State.ConnectionId = normalized;
+        await _state.WriteStateAsync();
     }
 
-    public Task<bool> ClearIfConnectionMatch(string connectionId)
+    public async Task<bool> SetRoomIfConnectionMatch(string connectionId, string roomId)
     {
         var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_connectionId, normalizedConnectionId, StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_state.State.ConnectionId, normalizedConnectionId, StringComparison.Ordinal))
         {
-            return Task.FromResult(false);
+            return false;
         }
 
-        _connectionId = string.Empty;
-        _roomId = string.Empty;
+        var normalizedRoomId = roomId?.Trim() ?? string.Empty;
+        if (string.Equals(_state.State.RoomId, normalizedRoomId, StringComparison.Ordinal))
+        {
+            return false;
+        }
 
-        return Task.FromResult(true);
+        _state.State.RoomId = normalizedRoomId;
+        await _state.WriteStateAsync();
+        return true;
+    }
+
+    public async Task<bool> ClearIfConnectionMatch(string connectionId)
+    {
+        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedConnectionId) || !string.Equals(_state.State.ConnectionId, normalizedConnectionId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_state.State.ConnectionId) && string.IsNullOrWhiteSpace(_state.State.RoomId))
+        {
+            return false;
+        }
+
+        _state.State.ConnectionId = string.Empty;
+        _state.State.RoomId = string.Empty;
+        await _state.WriteStateAsync();
+
+        return true;
     }
 }
